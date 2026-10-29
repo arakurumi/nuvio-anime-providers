@@ -1,5 +1,5 @@
-import { OTAKUDESU } from './config.js';
-import { resolveEmbeddedVideo } from '../shared/player.js';
+import { resolveEmbeddedVideo } from "../shared/player.js";
+import { OTAKUDESU } from "./config.js";
 
 /**
  * OtakuDesu wraps the shared iframe resolver so the provider keeps its
@@ -10,5 +10,9 @@ import { resolveEmbeddedVideo } from '../shared/player.js';
  * @returns {Promise<{ url: string, referer: string, subtitles: any[] }|null>}
  */
 export function resolveVideo(embedUrl, { http, log }) {
-  return resolveEmbeddedVideo(embedUrl, { http, log, referer: `${OTAKUDESU.baseUrl}/` });
+	return resolveEmbeddedVideo(embedUrl, {
+		http,
+		log,
+		referer: `${OTAKUDESU.baseUrl}/`,
+	});
 }

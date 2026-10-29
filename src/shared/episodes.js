@@ -1,4 +1,4 @@
-import { toPositiveInt } from './text.js';
+import { toPositiveInt } from "./text.js";
 
 /**
  * Reads an episode number from a site label such as "Episode 12", "Ep. 5" or
@@ -8,9 +8,9 @@ import { toPositiveInt } from './text.js';
  * @returns {number|null}
  */
 export function episodeNumberFromText(value) {
-  const text = String(value === null || value === undefined ? '' : value);
-  const match = text.match(/\b(?:episode|ep\.?)\s*0*(\d+)\b/i);
-  return match ? toPositiveInt(match[1]) : null;
+	const text = String(value === null || value === undefined ? "" : value);
+	const match = text.match(/\b(?:episode|ep\.?)\s*0*(\d+)\b/i);
+	return match ? toPositiveInt(match[1]) : null;
 }
 
 /**
@@ -20,10 +20,10 @@ export function episodeNumberFromText(value) {
  * @returns {number|null}
  */
 export function episodeNumberFromUrl(value) {
-  const match = String(value === null || value === undefined ? '' : value).match(
-    /(?:episode|ep)[-_/]?0*(\d+)/i
-  );
-  return match ? toPositiveInt(match[1]) : null;
+	const match = String(
+		value === null || value === undefined ? "" : value,
+	).match(/(?:episode|ep)[-_/]?0*(\d+)/i);
+	return match ? toPositiveInt(match[1]) : null;
 }
 
 /**
@@ -40,38 +40,42 @@ export function episodeNumberFromUrl(value) {
  * @returns {{ number: number, url: string, title?: string }|null}
  */
 export function pickEpisode(entries, episode, season, seasonCounts) {
-  const list = (Array.isArray(entries) ? entries : []).filter((entry) => entry && entry.url);
-  if (!list.length) return null;
+	const list = (Array.isArray(entries) ? entries : []).filter(
+		(entry) => entry?.url,
+	);
+	if (!list.length) return null;
 
-  const counts = seasonCounts || {};
-  const expected = season ? counts[season] : null;
-  const isCollection = Boolean(season && season > 1 && expected && list.length > expected);
+	const counts = seasonCounts || {};
+	const expected = season ? counts[season] : null;
+	const isCollection = Boolean(
+		season && season > 1 && expected && list.length > expected,
+	);
 
-  if (isCollection) {
-    let absolute = 0;
-    let complete = true;
+	if (isCollection) {
+		let absolute = 0;
+		let complete = true;
 
-    for (let index = 1; index < season; index += 1) {
-      const count = counts[index];
-      if (!count) {
-        complete = false;
-        break;
-      }
-      absolute += count;
-    }
+		for (let index = 1; index < season; index += 1) {
+			const count = counts[index];
+			if (!count) {
+				complete = false;
+				break;
+			}
+			absolute += count;
+		}
 
-    if (complete) {
-      const target = absolute + episode;
-      const found = list.find((entry) => entry.number === target);
-      if (found) return Object.assign({}, found, { number: target });
-    }
-  }
+		if (complete) {
+			const target = absolute + episode;
+			const found = list.find((entry) => entry.number === target);
+			if (found) return Object.assign({}, found, { number: target });
+		}
+	}
 
-  const direct = list.find((entry) => entry.number === episode);
-  if (direct) return direct;
+	const direct = list.find((entry) => entry.number === episode);
+	if (direct) return direct;
 
-  // Movies and some OVAs publish a single page without a reliable number.
-  if (episode === 1 && list.length === 1) return list[0];
+	// Movies and some OVAs publish a single page without a reliable number.
+	if (episode === 1 && list.length === 1) return list[0];
 
-  return null;
+	return null;
 }

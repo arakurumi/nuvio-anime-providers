@@ -1,12 +1,12 @@
-import { createHianimeClient } from './client.js';
-import { HIANIME } from './config.js';
-import { resolveEmbed } from './embed.js';
-import { createHttpClient } from '../shared/http.js';
-import { createLogger } from '../shared/log.js';
-import { buildStream, probeHlsQuality } from '../shared/media.js';
-import { findBestMatch } from '../shared/selection.js';
-import { parseContentId, resolveTitles } from '../shared/tmdb.js';
-import { toPositiveInt } from '../shared/text.js';
+import { createHttpClient } from "../shared/http.js";
+import { createLogger } from "../shared/log.js";
+import { buildStream, probeHlsQuality } from "../shared/media.js";
+import { findBestMatch } from "../shared/selection.js";
+import { toPositiveInt } from "../shared/text.js";
+import { parseContentId, resolveTitles } from "../shared/tmdb.js";
+import { createHianimeClient } from "./client.js";
+import { HIANIME } from "./config.js";
+import { resolveEmbed } from "./embed.js";
 
 /**
  * HiAnime provider entry point.
@@ -22,74 +22,87 @@ import { toPositiveInt } from '../shared/text.js';
  * @returns {Promise<Array<Record<string, any>>>}
  */
 export async function getStreams(contentId, mediaType, season, episode) {
-  const log = createLogger(HIANIME.label);
-  const http = createHttpClient({
-    userAgent: HIANIME.userAgent,
-    budgetMs: HIANIME.budgetMs,
-    startedAt: Date.now(),
-    log,
-  });
-  const client = createHianimeClient({ http, log });
+	const log = createLogger(HIANIME.label);
+	const http = createHttpClient({
+		budgetMs: HIANIME.budgetMs,
+		log,
+		startedAt: Date.now(),
+		userAgent: HIANIME.userAgent,
+	});
+	const client = createHianimeClient({ http, log });
 
-  const type = mediaType === 'movie' ? 'movie' : 'tv';
-  const seasonNumber = toPositiveInt(season);
-  const episodeNumber = toPositiveInt(episode) || 1;
+	const type = mediaType === "movie" ? "movie" : "tv";
+	const seasonNumber = toPositiveInt(season);
+	const episodeNumber = toPositiveInt(episode) || 1;
 
-  // MAL ids can be played directly: the site's player is MAL based.
-  const parsed = parseContentId(contentId);
-  const effectiveEpisode = parsed.kind === 'mal' && !toPositiveInt(episode)
-    ? parsed.seasonSuffix || episodeNumber
-    : episodeNumber;
+	// MAL ids can be played directly: the site's player is MAL based.
+	const parsed = parseContentId(contentId);
+	const effectiveEpisode =
+		parsed.kind === "mal" && !toPositiveInt(episode)
+			? parsed.seasonSuffix || episodeNumber
+			: episodeNumber;
 
-  log.info(`Request id=${contentId} type=${type} season=${seasonNumber} episode=${effectiveEpisode}`);
+	log.info(
+		`Request id=${contentId} type=${type} season=${seasonNumber} episode=${effectiveEpisode}`,
+	);
 
-  if (parsed.kind === 'mal') {
-    return resolveByMal(parsed.value, effectiveEpisode, type === 'movie', { http, log });
-  }
+	if (parsed.kind === "mal") {
+		return resolveByMal(parsed.value, effectiveEpisode, type === "movie", {
+			http,
+			log,
+		});
+	}
 
-  const meta = await resolveTitles({
-    contentId,
-    mediaType: type,
-    season: seasonNumber,
-    http,
-    log,
-    locale: 'en',
-  });
+	const meta = await resolveTitles({
+		contentId,
+		http,
+		locale: "en",
+		log,
+		mediaType: type,
+		season: seasonNumber,
+	});
 
-  if (!meta.titles.length) {
-    log.warn('No title candidates available; cannot search the site.');
-    return [];
-  }
+	if (!meta.titles.length) {
+		log.warn("No title candidates available; cannot search the site.");
+		return [];
+	}
 
-  const match = await findBestMatch({
-    titles: meta.titles,
-    season: seasonNumber,
-    search: client.search,
-    log,
-  });
+	const match = await findBestMatch({
+		log,
+		search: client.search,
+		season: seasonNumber,
+		titles: meta.titles,
+	});
 
-  if (!match) {
-    log.warn('No matching anime found on HiAnime.');
-    return [];
-  }
+	if (!match) {
+		log.warn("No matching anime found on HiAnime.");
+		return [];
+	}
 
-  const episodeMap = await client.getEpisodes(match.item);
-  if (!episodeMap) return [];
+	const episodeMap = await client.getEpisodes(match.item);
+	if (!episodeMap) return [];
 
-  const resolvedEpisode = resolveEpisodeNumber(episodeMap, seasonNumber, episodeNumber, meta);
-  if (!resolvedEpisode) {
-    log.warn(`Episode ${episodeNumber} is not available for "${match.item.title}".`);
-    return [];
-  }
+	const resolvedEpisode = resolveEpisodeNumber(
+		episodeMap,
+		seasonNumber,
+		episodeNumber,
+		meta,
+	);
+	if (!resolvedEpisode) {
+		log.warn(
+			`Episode ${episodeNumber} is not available for "${match.item.title}".`,
+		);
+		return [];
+	}
 
-  const servers = await client.getServers(episodeMap.byNumber[resolvedEpisode]);
-  if (!servers.length) {
-    log.warn(`No servers returned for episode ${resolvedEpisode}.`);
-    return [];
-  }
+	const servers = await client.getServers(episodeMap.byNumber[resolvedEpisode]);
+	if (!servers.length) {
+		log.warn(`No servers returned for episode ${resolvedEpisode}.`);
+		return [];
+	}
 
-  const label = type === 'movie' ? 'Movie' : `Episode ${resolvedEpisode}`;
-  return resolveServers(servers, label, { http, log });
+	const label = type === "movie" ? "Movie" : `Episode ${resolvedEpisode}`;
+	return resolveServers(servers, label, { http, log });
 }
 
 /**
@@ -104,30 +117,31 @@ export async function getStreams(contentId, mediaType, season, episode) {
  * @returns {number|null}
  */
 function resolveEpisodeNumber(episodeMap, season, episode, meta) {
-  const counts = meta.seasonCounts || {};
-  const expected = season ? counts[season] : null;
-  const isCollection = season && season > 1 && expected && episodeMap.total > expected;
+	const counts = meta.seasonCounts || {};
+	const expected = season ? counts[season] : null;
+	const isCollection =
+		season && season > 1 && expected && episodeMap.total > expected;
 
-  if (isCollection) {
-    let absolute = 0;
-    let complete = true;
+	if (isCollection) {
+		let absolute = 0;
+		let complete = true;
 
-    for (let index = 1; index < season; index += 1) {
-      const count = counts[index];
-      if (!count) {
-        complete = false;
-        break;
-      }
-      absolute += count;
-    }
+		for (let index = 1; index < season; index += 1) {
+			const count = counts[index];
+			if (!count) {
+				complete = false;
+				break;
+			}
+			absolute += count;
+		}
 
-    if (complete) {
-      const candidate = absolute + episode;
-      if (episodeMap.byNumber[candidate]) return candidate;
-    }
-  }
+		if (complete) {
+			const candidate = absolute + episode;
+			if (episodeMap.byNumber[candidate]) return candidate;
+		}
+	}
 
-  return episodeMap.byNumber[episode] ? episode : null;
+	return episodeMap.byNumber[episode] ? episode : null;
 }
 
 /**
@@ -136,37 +150,37 @@ function resolveEpisodeNumber(episodeMap, season, episode, meta) {
  * @param {{ http: ReturnType<import('../shared/http.js').createHttpClient>, log: ReturnType<import('../shared/log.js').createLogger> }} options
  */
 async function resolveServers(servers, label, { http, log }) {
-  const streams = [];
-  let attempts = 0;
+	const streams = [];
+	let attempts = 0;
 
-  for (const server of servers) {
-    if (attempts >= 3 || streams.length >= 2 || http.remaining() < 22000) break;
-    attempts += 1;
+	for (const server of servers) {
+		if (attempts >= 3 || streams.length >= 2 || http.remaining() < 22000) break;
+		attempts += 1;
 
-    const resolved = await resolveEmbed(server.url, { http, log });
-    if (!resolved) continue;
+		const resolved = await resolveEmbed(server.url, { http, log });
+		if (!resolved) continue;
 
-    const quality = await probeHlsQuality(http, resolved.url, resolved.origin);
+		const quality = await probeHlsQuality(http, resolved.url, resolved.origin);
 
-    streams.push(
-      buildStream({
-        name: HIANIME.label,
-        provider: HIANIME.providerId,
-        title: `${label} • ${server.name} (${server.type.toUpperCase()})`,
-        url: resolved.url,
-        quality,
-        type: 'hls',
-        language: server.type === 'dub' ? 'en' : 'ja',
-        referer: resolved.origin,
-        origin: resolved.origin,
-        subtitles: resolved.subtitles,
-        userAgent: HIANIME.userAgent,
-      })
-    );
-  }
+		streams.push(
+			buildStream({
+				language: server.type === "dub" ? "en" : "ja",
+				name: HIANIME.label,
+				origin: resolved.origin,
+				provider: HIANIME.providerId,
+				quality,
+				referer: resolved.origin,
+				subtitles: resolved.subtitles,
+				title: `${label} • ${server.name} (${server.type.toUpperCase()})`,
+				type: "hls",
+				url: resolved.url,
+				userAgent: HIANIME.userAgent,
+			}),
+		);
+	}
 
-  log.debug(`Resolved ${streams.length} stream(s).`);
-  return streams;
+	log.debug(`Resolved ${streams.length} stream(s).`);
+	return streams;
 }
 
 /**
@@ -176,34 +190,34 @@ async function resolveServers(servers, label, { http, log }) {
  * @param {{ http: ReturnType<import('../shared/http.js').createHttpClient>, log: ReturnType<import('../shared/log.js').createLogger> }} options
  */
 async function resolveByMal(malId, episode, isMovie, { http, log }) {
-  const streams = [];
+	const streams = [];
 
-  for (const kind of ['sub', 'dub']) {
-    if (streams.length >= 2 || http.remaining() < 22000) break;
+	for (const kind of ["sub", "dub"]) {
+		if (streams.length >= 2 || http.remaining() < 22000) break;
 
-    const embedUrl = `${HIANIME.embedBaseUrl}/stream/mal/${malId}/${episode}/${kind}`;
-    const resolved = await resolveEmbed(embedUrl, { http, log });
-    if (!resolved) continue;
+		const embedUrl = `${HIANIME.embedBaseUrl}/stream/mal/${malId}/${episode}/${kind}`;
+		const resolved = await resolveEmbed(embedUrl, { http, log });
+		if (!resolved) continue;
 
-    const quality = await probeHlsQuality(http, resolved.url, resolved.origin);
+		const quality = await probeHlsQuality(http, resolved.url, resolved.origin);
 
-    streams.push(
-      buildStream({
-        name: HIANIME.label,
-        provider: HIANIME.providerId,
-        title: `${isMovie ? 'Movie' : `Episode ${episode}`} • ZokoAnime (${kind.toUpperCase()})`,
-        url: resolved.url,
-        quality,
-        type: 'hls',
-        language: kind === 'dub' ? 'en' : 'ja',
-        referer: resolved.origin,
-        origin: resolved.origin,
-        subtitles: resolved.subtitles,
-        userAgent: HIANIME.userAgent,
-      })
-    );
-  }
+		streams.push(
+			buildStream({
+				language: kind === "dub" ? "en" : "ja",
+				name: HIANIME.label,
+				origin: resolved.origin,
+				provider: HIANIME.providerId,
+				quality,
+				referer: resolved.origin,
+				subtitles: resolved.subtitles,
+				title: `${isMovie ? "Movie" : `Episode ${episode}`} • ZokoAnime (${kind.toUpperCase()})`,
+				type: "hls",
+				url: resolved.url,
+				userAgent: HIANIME.userAgent,
+			}),
+		);
+	}
 
-  log.debug(`Direct MAL playback resolved ${streams.length} stream(s).`);
-  return streams;
+	log.debug(`Direct MAL playback resolved ${streams.length} stream(s).`);
+	return streams;
 }

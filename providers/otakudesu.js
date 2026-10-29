@@ -24,16 +24,115 @@ var OtakudesuProvider = (() => {
     getStreams: () => getStreams
   });
 
-  // src/shared/dom.js
-  function loadHtml(html) {
-    const cheerioLib = typeof cheerio !== "undefined" && cheerio ? cheerio : globalThis.cheerio;
-    if (cheerioLib && typeof cheerioLib.load === "function") return cheerioLib.load(html);
-    const runtimeRequire = typeof globalThis !== "undefined" ? globalThis.require : null;
-    if (typeof runtimeRequire === "function") {
-      const loaded = runtimeRequire("cheerio");
-      if (loaded && typeof loaded.load === "function") return loaded.load(html);
+  // src/shared/http.js
+  var HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+  var REQUEST_TIMEOUT_MS = 15e3;
+  function withTimeout(promise, ms) {
+    if (typeof setTimeout !== "function" || !(ms > 0)) return promise;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`request timed out after ${ms}ms`)),
+        ms
+      );
+      const clear = typeof clearTimeout === "function" ? clearTimeout : () => {
+      };
+      promise.then(
+        (value) => {
+          clear(timer);
+          resolve(value);
+        },
+        (error) => {
+          clear(timer);
+          reject(error);
+        }
+      );
+    });
+  }
+  function createHttpClient({
+    userAgent,
+    accept = HTML_ACCEPT,
+    defaultHeaders = {},
+    budgetMs = 5e4,
+    startedAt = Date.now(),
+    log
+  }) {
+    const remaining = () => budgetMs - (Date.now() - startedAt);
+    async function text(url, options = {}) {
+      if (remaining() <= 0) {
+        log.warn(`Time budget exhausted, skipping ${url}`);
+        return null;
+      }
+      const headers = Object.assign(
+        {
+          Accept: accept,
+          "Accept-Language": "en-US,en;q=0.9",
+          "User-Agent": userAgent
+        },
+        defaultHeaders,
+        options.headers || {}
+      );
+      const init = { headers, method: options.method || "GET" };
+      if (options.body !== void 0 && options.body !== null)
+        init.body = options.body;
+      try {
+        const timeout = Math.min(REQUEST_TIMEOUT_MS, Math.max(1e3, remaining()));
+        const response = await withTimeout(fetch(url, init), timeout);
+        if (!response || response.status === 0 || !response.ok) {
+          log.warn(
+            `HTTP ${response ? response.status : "no-response"} for ${url}`
+          );
+          return null;
+        }
+        return await response.text() || "";
+      } catch (error) {
+        log.warn(
+          `Request failed for ${url}: ${error?.message ? error.message : error}`
+        );
+        return null;
+      }
     }
-    throw new Error("cheerio is not available in this runtime");
+    async function json(url, options = {}) {
+      const payload = await text(
+        url,
+        Object.assign({}, options, {
+          headers: Object.assign(
+            { Accept: "application/json" },
+            options.headers || {}
+          )
+        })
+      );
+      if (!payload) return null;
+      try {
+        return JSON.parse(payload);
+      } catch (_error) {
+        log.warn(`Invalid JSON from ${url}`);
+        return null;
+      }
+    }
+    return { budgetMs, json, remaining, startedAt, text };
+  }
+
+  // src/shared/log.js
+  function createLogger(tag) {
+    const prefix = `[${tag}]`;
+    function write(level, args) {
+      const target = console[level] || console.log;
+      target(prefix, ...args);
+    }
+    return {
+      debug(...args) {
+        write("log", args);
+      },
+      error(...args) {
+        write("error", args);
+      },
+      info(...args) {
+        write("info", args);
+      },
+      warn(...args) {
+        write("warn", args);
+      }
+    };
   }
 
   // src/shared/media.js
@@ -76,14 +175,14 @@ var OtakudesuProvider = (() => {
     if (referer) headers.Referer = ensureTrailingSlash(referer);
     if (origin) headers.Origin = origin;
     const stream = {
-      name,
-      title: streamTitle(title),
-      url,
-      quality: quality || "HD",
-      type,
+      headers,
       language,
+      name,
       provider,
-      headers
+      quality: quality || "HD",
+      title: streamTitle(title),
+      type,
+      url
     };
     if (Array.isArray(subtitles) && subtitles.length) {
       stream.subtitles = subtitles;
@@ -99,26 +198,35 @@ var OtakudesuProvider = (() => {
     if (!playlist) return null;
     const pattern = /RESOLUTION=\d+x(\d+)/g;
     let best = 0;
-    let match;
-    while (match = pattern.exec(playlist)) {
+    let match = pattern.exec(playlist);
+    while (match) {
       const height = Number.parseInt(match[1], 10);
       if (height > best && height <= 4320) best = height;
+      match = pattern.exec(playlist);
     }
     return best > 0 ? `${best}p` : null;
   }
 
   // src/shared/text.js
   function decodeEntities(value) {
-    return String(value === null || value === void 0 ? "" : value).replace(/&#x([0-9a-f]+);/gi, (match, hex) => String.fromCharCode(Number.parseInt(hex, 16))).replace(/&#(\d+);/g, (match, decimal) => String.fromCharCode(Number.parseInt(decimal, 10))).replace(/&nbsp;/gi, " ").replace(/&quot;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&");
+    return String(value === null || value === void 0 ? "" : value).replace(
+      /&#x([0-9a-f]+);/gi,
+      (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16))
+    ).replace(
+      /&#(\d+);/g,
+      (_match, decimal) => String.fromCharCode(Number.parseInt(decimal, 10))
+    ).replace(/&nbsp;/gi, " ").replace(/&quot;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&");
   }
   function cleanText(value) {
     return decodeEntities(value).replace(/\s+/g, " ").trim();
   }
   function normalize(value) {
-    let text = String(value === null || value === void 0 ? "" : value).toLowerCase();
+    let text = String(
+      value === null || value === void 0 ? "" : value
+    ).toLowerCase();
     try {
       text = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    } catch (error) {
+    } catch (_error) {
     }
     text = text.replace(/&/g, " and ").replace(/['`\u2019]/g, "");
     return text.replace(/[^a-z0-9]+/g, " ").trim();
@@ -126,7 +234,10 @@ var OtakudesuProvider = (() => {
   function cleanCandidate(value) {
     let text = String(value === null || value === void 0 ? "" : value);
     text = text.replace(/\([^)]*episode[^)]*\)/gi, " ");
-    text = text.replace(/\([^)]*(?:sub|dub|batch|bd|bluray|movie|tv|ova|ona|special)[^)]*\)/gi, " ");
+    text = text.replace(
+      /\([^)]*(?:sub|dub|batch|bd|bluray|movie|tv|ova|ona|special)[^)]*\)/gi,
+      " "
+    );
     text = text.replace(/subtitle\s+indonesia/gi, " ");
     text = text.replace(/\bsub\s*indo\b/gi, " ");
     text = text.replace(/\bdub\s*indo\b/gi, " ");
@@ -149,333 +260,6 @@ var OtakudesuProvider = (() => {
   function toPositiveInt(value) {
     const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  }
-
-  // src/otakudesu/config.js
-  var OTAKUDESU = {
-    label: "OtakuDesu",
-    providerId: "otakudesu",
-    baseUrl: "https://otakudesu.blog",
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    budgetMs: 5e4
-  };
-
-  // src/otakudesu/client.js
-  function episodeNumberFromUrl(url) {
-    const match = String(url || "").match(/\/episode\/([^/?#]+)/i);
-    const slug = match ? match[1] : "";
-    const number = slug.match(/episode[-_ ]?(\d+)/i);
-    return number ? Number.parseInt(number[1], 10) : 0;
-  }
-  function episodeNumberFromText(text) {
-    const match = String(text || "").match(/episode\s+(\d+)/i);
-    return match ? Number.parseInt(match[1], 10) : 0;
-  }
-  function createOtakuDesuClient({ http, log }) {
-    const baseUrl = OTAKUDESU.baseUrl;
-    const siteReferer = `${baseUrl}/`;
-    async function search(query) {
-      const html = await http.text(`${baseUrl}/?s=${encodeURIComponent(query)}&post_type=anime`, {
-        headers: { Referer: siteReferer }
-      });
-      if (!html) return [];
-      const $ = loadHtml(html);
-      const results = [];
-      $("ul.chivsrc li").each(function(index, element) {
-        const item = $(element);
-        const link = item.find("h2 a").first();
-        if (!link || !link.length) return;
-        const href = link.attr("href") || "";
-        if (href.indexOf("/anime/") === -1) return;
-        const title = cleanText(link.text());
-        if (!title) return;
-        results.push({ title, url: absoluteUrl(href, baseUrl) });
-      });
-      log.debug(`Search "${query}" returned ${results.length} result(s).`);
-      return results;
-    }
-    async function getEpisodes(animeUrl) {
-      const html = await http.text(animeUrl, { headers: { Referer: siteReferer } });
-      if (!html) return null;
-      const $ = loadHtml(html);
-      const numbered = [];
-      const unnumbered = [];
-      const seen = {};
-      $('a[href*="/episode/"]').each(function(index, element) {
-        const anchor = $(element);
-        const href = anchor.attr("href");
-        if (!href) return;
-        const url = absoluteUrl(href, baseUrl);
-        if (!url || seen[url]) return;
-        seen[url] = true;
-        const number = episodeNumberFromUrl(url) || episodeNumberFromText(cleanText(anchor.text()));
-        if (number > 0) numbered.push({ number, url });
-        else unnumbered.push(url);
-      });
-      if (!numbered.length && !unnumbered.length) {
-        log.warn(`No episode links found at ${animeUrl}`);
-        return null;
-      }
-      log.debug(`Anime page exposes ${numbered.length} numbered episode(s).`);
-      return { numbered, unnumbered, total: numbered.length };
-    }
-    async function getEmbedUrl(episodeUrl) {
-      const html = await http.text(episodeUrl, { headers: { Referer: siteReferer } });
-      if (!html) return null;
-      const $ = loadHtml(html);
-      let source = $("#pembed iframe").attr("src") || $(".responsive-embed-stream iframe").attr("src") || "";
-      if (!source) {
-        const match = html.match(/id=["']pembed["'][\s\S]{0,1200}?<iframe[^>]+src=["']([^"']+)["']/i);
-        if (match) source = match[1];
-      }
-      if (!source) {
-        log.debug(`No player iframe at ${episodeUrl}`);
-        return null;
-      }
-      return absoluteUrl(cleanText(source), baseUrl);
-    }
-    return { search, getEpisodes, getEmbedUrl };
-  }
-
-  // src/shared/packer.js
-  function readJsString(source, position) {
-    const quote = source.charAt(position);
-    if (quote !== "'" && quote !== '"') return null;
-    let index = position + 1;
-    let value = "";
-    while (index < source.length) {
-      const char = source.charAt(index);
-      if (char === "\\") {
-        const next = source.charAt(index + 1);
-        if (next === "x") {
-          value += String.fromCharCode(Number.parseInt(source.substr(index + 2, 2), 16));
-          index += 4;
-          continue;
-        }
-        if (next === "u") {
-          value += String.fromCharCode(Number.parseInt(source.substr(index + 2, 4), 16));
-          index += 6;
-          continue;
-        }
-        const escapes = { n: "\n", r: "\r", t: "	", b: "\b", f: "\f", v: "\v", "0": "\0" };
-        value += escapes[next] !== void 0 ? escapes[next] : next;
-        index += 2;
-        continue;
-      }
-      if (char === quote) return { value, end: index + 1 };
-      value += char;
-      index += 1;
-    }
-    return null;
-  }
-  function readInt(source, position) {
-    const match = source.slice(position).match(/^\s*(\d+)/);
-    if (!match) return null;
-    return { value: Number.parseInt(match[1], 10), end: position + match[0].length };
-  }
-  function replaceToken(source, token, replacement) {
-    try {
-      return source.replace(new RegExp(`\\b${token}\\b`, "g"), replacement);
-    } catch (error) {
-      return source;
-    }
-  }
-  function unpackPacker(input) {
-    const source = String(input || "");
-    const marker = source.indexOf("eval(function(p,a,c,k,e,d)");
-    if (marker === -1) return source;
-    const call = source.indexOf("}(", marker);
-    if (call === -1) return source;
-    let position = call + 2;
-    const payload = readJsString(source, position);
-    if (!payload) return source;
-    position = payload.end;
-    while (position < source.length && /[\s,]/.test(source.charAt(position))) position += 1;
-    const radix = readInt(source, position);
-    if (!radix) return source;
-    position = radix.end;
-    while (position < source.length && /[\s,]/.test(source.charAt(position))) position += 1;
-    const count = readInt(source, position);
-    if (!count) return source;
-    position = count.end;
-    while (position < source.length && /[\s,]/.test(source.charAt(position))) position += 1;
-    const words = readJsString(source, position);
-    if (!words) return source;
-    const tokens = words.value.split("|");
-    let result = payload.value;
-    for (let index = count.value - 1; index >= 0; index -= 1) {
-      if (!tokens[index]) continue;
-      result = replaceToken(result, index.toString(radix.value), tokens[index]);
-    }
-    return result;
-  }
-
-  // src/shared/player.js
-  var AD_HOST = /googleads|doubleclick|googletagmanager|googlesyndication|facebook|twitter|disqus|histats|analytics|adservice|popads|adsterra|propeller/i;
-  function findDirectMedia(html) {
-    const match = String(html || "").match(/https?:\/\/[^"'\s\\]+\.(?:m3u8|mp4)(?:\?[^"'\s\\]*)?/i);
-    return match ? match[0] : null;
-  }
-  function findIframe(html, baseUrl) {
-    const pattern = /<iframe[^>]+src=["']([^"']+)["']/gi;
-    const candidates = [];
-    let match;
-    while (match = pattern.exec(html)) {
-      const url = absoluteUrl(match[1], baseUrl);
-      if (!isHttpUrl(url)) continue;
-      if (AD_HOST.test(url)) continue;
-      if (candidates.indexOf(url) === -1) candidates.push(url);
-    }
-    for (const url of candidates) {
-      if (/blogger\.com|video\.g|drive\.google\.com|desustream|desudrive|mp4upload|vidhide|filemoon|streamtape/i.test(url)) {
-        return url;
-      }
-    }
-    return candidates.length ? candidates[0] : null;
-  }
-  function extractGooglevideo(html) {
-    const decoded = String(html || "").replace(/\\u003d/g, "=").replace(/\\u0026/g, "&").replace(/\\u0025/g, "%").replace(/\\u002F/g, "/").replace(/\\\//g, "/").replace(/\\&quot;/g, '"').replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-    const match = decoded.match(/https?:\/\/[A-Za-z0-9.-]*googlevideo\.com\/videoplayback\?[^"'\s\\]*/i);
-    if (!match) return null;
-    const url = match[0].replace(/\\+$/, "");
-    return isHttpUrl(url) ? url : null;
-  }
-  function isGoogleHost(url) {
-    return /blogger\.com|video\.g\?token|googlevideo\.com/i.test(url);
-  }
-  async function resolveEmbeddedVideo(embedUrl, { http, log, referer }) {
-    let current = embedUrl;
-    let siteReferer = referer || `${originOf(embedUrl)}/`;
-    const visited = {};
-    for (let depth = 0; depth <= 3 && current; depth += 1) {
-      if (visited[current]) return null;
-      visited[current] = true;
-      const html = await http.text(current, { headers: { Referer: siteReferer } });
-      if (!html) return null;
-      if (isGoogleHost(current) || html.indexOf("googlevideo.com/videoplayback") !== -1) {
-        const url = extractGooglevideo(html);
-        if (url) return { url, referer: "", subtitles: [] };
-      }
-      let direct = null;
-      if (html.indexOf("eval(function(p,a,c,k,e,d)") !== -1) {
-        const unpacked = unpackPacker(html);
-        if (unpacked !== html) direct = findDirectMedia(unpacked);
-      }
-      if (!direct) direct = findDirectMedia(html);
-      if (direct) {
-        const url = absoluteUrl(direct, current);
-        return { url, referer: originOf(current), subtitles: [] };
-      }
-      const next = findIframe(html, current);
-      if (!next || next === current) {
-        log.debug(`No playable url found at ${current}`);
-        return null;
-      }
-      siteReferer = `${originOf(current)}/`;
-      current = next;
-    }
-    return null;
-  }
-
-  // src/otakudesu/player.js
-  function resolveVideo(embedUrl, { http, log }) {
-    return resolveEmbeddedVideo(embedUrl, { http, log, referer: `${OTAKUDESU.baseUrl}/` });
-  }
-
-  // src/shared/http.js
-  var HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
-  var REQUEST_TIMEOUT_MS = 15e3;
-  function withTimeout(promise, ms) {
-    if (typeof setTimeout !== "function" || !(ms > 0)) return promise;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`request timed out after ${ms}ms`)), ms);
-      const clear = typeof clearTimeout === "function" ? clearTimeout : function() {
-      };
-      promise.then(
-        (value) => {
-          clear(timer);
-          resolve(value);
-        },
-        (error) => {
-          clear(timer);
-          reject(error);
-        }
-      );
-    });
-  }
-  function createHttpClient({
-    userAgent,
-    accept = HTML_ACCEPT,
-    defaultHeaders = {},
-    budgetMs = 5e4,
-    startedAt = Date.now(),
-    log
-  }) {
-    const remaining = () => budgetMs - (Date.now() - startedAt);
-    async function text(url, options = {}) {
-      if (remaining() <= 0) {
-        log.warn(`Time budget exhausted, skipping ${url}`);
-        return null;
-      }
-      const headers = Object.assign(
-        { "User-Agent": userAgent, Accept: accept, "Accept-Language": "en-US,en;q=0.9" },
-        defaultHeaders,
-        options.headers || {}
-      );
-      const init = { method: options.method || "GET", headers };
-      if (options.body !== void 0 && options.body !== null) init.body = options.body;
-      try {
-        const timeout = Math.min(REQUEST_TIMEOUT_MS, Math.max(1e3, remaining()));
-        const response = await withTimeout(fetch(url, init), timeout);
-        if (!response || response.status === 0 || !response.ok) {
-          log.warn(`HTTP ${response ? response.status : "no-response"} for ${url}`);
-          return null;
-        }
-        return await response.text() || "";
-      } catch (error) {
-        log.warn(`Request failed for ${url}: ${error && error.message ? error.message : error}`);
-        return null;
-      }
-    }
-    async function json(url, options = {}) {
-      const payload = await text(
-        url,
-        Object.assign({}, options, {
-          headers: Object.assign({ Accept: "application/json" }, options.headers || {})
-        })
-      );
-      if (!payload) return null;
-      try {
-        return JSON.parse(payload);
-      } catch (error) {
-        log.warn(`Invalid JSON from ${url}`);
-        return null;
-      }
-    }
-    return { text, json, remaining, startedAt, budgetMs };
-  }
-
-  // src/shared/log.js
-  function createLogger(tag) {
-    const prefix = `[${tag}]`;
-    function write(level, args) {
-      const target = console[level] || console.log;
-      target(prefix, ...args);
-    }
-    return {
-      debug(...args) {
-        write("log", args);
-      },
-      info(...args) {
-        write("info", args);
-      },
-      warn(...args) {
-        write("warn", args);
-      },
-      error(...args) {
-        write("error", args);
-      }
-    };
   }
 
   // src/shared/selection.js
@@ -511,7 +295,13 @@ var OtakudesuProvider = (() => {
     }
     return Math.max(0, score);
   }
-  async function findBestMatch({ titles, season, maxQueries = 4, search, log }) {
+  async function findBestMatch({
+    titles,
+    season,
+    maxQueries = 4,
+    search,
+    log
+  }) {
     const queries = [];
     const seen = {};
     for (const title of titles) {
@@ -539,7 +329,9 @@ var OtakudesuProvider = (() => {
       if (index >= 1 && best && best.score >= 75) break;
     }
     if (log && best) {
-      log.debug(`Matched "${best.item.title}" with score ${best.score.toFixed(2)}`);
+      log.debug(
+        `Matched "${best.item.title}" with score ${best.score.toFixed(2)}`
+      );
     }
     return best && best.score >= 55 ? best : null;
   }
@@ -561,31 +353,41 @@ var OtakudesuProvider = (() => {
     if (tracker) {
       return {
         kind: tracker[1].toLowerCase(),
-        value: tracker[2],
-        seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null
+        seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null,
+        value: tracker[2]
       };
     }
     const imdb = raw.match(IMDB_ID);
-    if (imdb) return { kind: "imdb", value: imdb[1], seasonSuffix: null };
+    if (imdb) return { kind: "imdb", seasonSuffix: null, value: imdb[1] };
     const numeric = raw.replace(ID_PREFIX, "");
-    if (/^\d+$/.test(numeric)) return { kind: "tmdb", value: numeric, seasonSuffix: null };
-    return { kind: "unknown", value: raw, seasonSuffix: null };
+    if (/^\d+$/.test(numeric))
+      return { kind: "tmdb", seasonSuffix: null, value: numeric };
+    return { kind: "unknown", seasonSuffix: null, value: raw };
   }
-  async function resolveTitles({ contentId, mediaType, season, http, log, locale = "en" }) {
+  async function resolveTitles({
+    contentId,
+    mediaType,
+    season,
+    http,
+    log,
+    locale = "en"
+  }) {
     const parsed = parseContentId(contentId);
     const result = {
-      titles: [],
-      seasonCounts: {},
-      name: "",
       malId: null,
-      seasonSuffix: parsed.seasonSuffix
+      name: "",
+      seasonCounts: {},
+      seasonSuffix: parsed.seasonSuffix,
+      titles: []
     };
     if (parsed.kind === "mal") {
       result.malId = parsed.value;
       return result;
     }
     if (parsed.kind !== "tmdb" && parsed.kind !== "imdb") {
-      log.warn(`Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`);
+      log.warn(
+        `Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`
+      );
       return result;
     }
     const apiKey = readTmdbKey();
@@ -600,8 +402,8 @@ var OtakudesuProvider = (() => {
         `${TMDB_API_BASE}/find/${encodeURIComponent(tmdbId)}?api_key=${apiKey}&external_source=imdb_id`
       );
       const list = found ? type === "movie" ? found.movie_results : found.tv_results : null;
-      const first = list && list.length ? list[0] : null;
-      if (!first || !first.id) {
+      const first = list?.length ? list[0] : null;
+      if (!first?.id) {
         log.warn(`IMDb id ${tmdbId} could not be resolved to a TMDB id.`);
         return result;
       }
@@ -687,38 +489,322 @@ var OtakudesuProvider = (() => {
     }
   }
 
+  // src/shared/dom.js
+  function loadHtml(html) {
+    const cheerioLib = typeof cheerio !== "undefined" && cheerio ? cheerio : globalThis.cheerio;
+    if (cheerioLib && typeof cheerioLib.load === "function")
+      return cheerioLib.load(html);
+    const runtimeRequire = typeof globalThis !== "undefined" ? globalThis.require : null;
+    if (typeof runtimeRequire === "function") {
+      const loaded = runtimeRequire("cheerio");
+      if (loaded && typeof loaded.load === "function") return loaded.load(html);
+    }
+    throw new Error("cheerio is not available in this runtime");
+  }
+
+  // src/otakudesu/config.js
+  var OTAKUDESU = {
+    baseUrl: "https://otakudesu.blog",
+    budgetMs: 5e4,
+    label: "OtakuDesu",
+    providerId: "otakudesu",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  };
+
+  // src/otakudesu/client.js
+  function episodeNumberFromUrl(url) {
+    const match = String(url || "").match(/\/episode\/([^/?#]+)/i);
+    const slug = match ? match[1] : "";
+    const number = slug.match(/episode[-_ ]?(\d+)/i);
+    return number ? Number.parseInt(number[1], 10) : 0;
+  }
+  function episodeNumberFromText(text) {
+    const match = String(text || "").match(/episode\s+(\d+)/i);
+    return match ? Number.parseInt(match[1], 10) : 0;
+  }
+  function createOtakuDesuClient({ http, log }) {
+    const baseUrl = OTAKUDESU.baseUrl;
+    const siteReferer = `${baseUrl}/`;
+    async function search(query) {
+      const html = await http.text(
+        `${baseUrl}/?s=${encodeURIComponent(query)}&post_type=anime`,
+        {
+          headers: { Referer: siteReferer }
+        }
+      );
+      if (!html) return [];
+      const $ = loadHtml(html);
+      const results = [];
+      $("ul.chivsrc li").each((_index, element) => {
+        const item = $(element);
+        const link = item.find("h2 a").first();
+        if (!link?.length) return;
+        const href = link.attr("href") || "";
+        if (href.indexOf("/anime/") === -1) return;
+        const title = cleanText(link.text());
+        if (!title) return;
+        results.push({ title, url: absoluteUrl(href, baseUrl) });
+      });
+      log.debug(`Search "${query}" returned ${results.length} result(s).`);
+      return results;
+    }
+    async function getEpisodes(animeUrl) {
+      const html = await http.text(animeUrl, {
+        headers: { Referer: siteReferer }
+      });
+      if (!html) return null;
+      const $ = loadHtml(html);
+      const numbered = [];
+      const unnumbered = [];
+      const seen = {};
+      $('a[href*="/episode/"]').each((_index, element) => {
+        const anchor = $(element);
+        const href = anchor.attr("href");
+        if (!href) return;
+        const url = absoluteUrl(href, baseUrl);
+        if (!url || seen[url]) return;
+        seen[url] = true;
+        const number = episodeNumberFromUrl(url) || episodeNumberFromText(cleanText(anchor.text()));
+        if (number > 0) numbered.push({ number, url });
+        else unnumbered.push(url);
+      });
+      if (!numbered.length && !unnumbered.length) {
+        log.warn(`No episode links found at ${animeUrl}`);
+        return null;
+      }
+      log.debug(`Anime page exposes ${numbered.length} numbered episode(s).`);
+      return { numbered, total: numbered.length, unnumbered };
+    }
+    async function getEmbedUrl(episodeUrl) {
+      const html = await http.text(episodeUrl, {
+        headers: { Referer: siteReferer }
+      });
+      if (!html) return null;
+      const $ = loadHtml(html);
+      let source = $("#pembed iframe").attr("src") || $(".responsive-embed-stream iframe").attr("src") || "";
+      if (!source) {
+        const match = html.match(
+          /id=["']pembed["'][\s\S]{0,1200}?<iframe[^>]+src=["']([^"']+)["']/i
+        );
+        if (match) source = match[1];
+      }
+      if (!source) {
+        log.debug(`No player iframe at ${episodeUrl}`);
+        return null;
+      }
+      return absoluteUrl(cleanText(source), baseUrl);
+    }
+    return { getEmbedUrl, getEpisodes, search };
+  }
+
+  // src/shared/packer.js
+  function readJsString(source, position) {
+    const quote = source.charAt(position);
+    if (quote !== "'" && quote !== '"') return null;
+    let index = position + 1;
+    let value = "";
+    while (index < source.length) {
+      const char = source.charAt(index);
+      if (char === "\\") {
+        const next = source.charAt(index + 1);
+        if (next === "x") {
+          value += String.fromCharCode(
+            Number.parseInt(source.substr(index + 2, 2), 16)
+          );
+          index += 4;
+          continue;
+        }
+        if (next === "u") {
+          value += String.fromCharCode(
+            Number.parseInt(source.substr(index + 2, 4), 16)
+          );
+          index += 6;
+          continue;
+        }
+        const escapes = {
+          0: "\0",
+          b: "\b",
+          f: "\f",
+          n: "\n",
+          r: "\r",
+          t: "	",
+          v: "\v"
+        };
+        value += escapes[next] !== void 0 ? escapes[next] : next;
+        index += 2;
+        continue;
+      }
+      if (char === quote) return { end: index + 1, value };
+      value += char;
+      index += 1;
+    }
+    return null;
+  }
+  function readInt(source, position) {
+    const match = source.slice(position).match(/^\s*(\d+)/);
+    if (!match) return null;
+    return {
+      end: position + match[0].length,
+      value: Number.parseInt(match[1], 10)
+    };
+  }
+  function replaceToken(source, token, replacement) {
+    try {
+      return source.replace(new RegExp(`\\b${token}\\b`, "g"), replacement);
+    } catch (_error) {
+      return source;
+    }
+  }
+  function unpackPacker(input) {
+    const source = String(input || "");
+    const marker = source.indexOf("eval(function(p,a,c,k,e,d)");
+    if (marker === -1) return source;
+    const call = source.indexOf("}(", marker);
+    if (call === -1) return source;
+    let position = call + 2;
+    const payload = readJsString(source, position);
+    if (!payload) return source;
+    position = payload.end;
+    while (position < source.length && /[\s,]/.test(source.charAt(position)))
+      position += 1;
+    const radix = readInt(source, position);
+    if (!radix) return source;
+    position = radix.end;
+    while (position < source.length && /[\s,]/.test(source.charAt(position)))
+      position += 1;
+    const count = readInt(source, position);
+    if (!count) return source;
+    position = count.end;
+    while (position < source.length && /[\s,]/.test(source.charAt(position)))
+      position += 1;
+    const words = readJsString(source, position);
+    if (!words) return source;
+    const tokens = words.value.split("|");
+    let result = payload.value;
+    for (let index = count.value - 1; index >= 0; index -= 1) {
+      if (!tokens[index]) continue;
+      result = replaceToken(result, index.toString(radix.value), tokens[index]);
+    }
+    return result;
+  }
+
+  // src/shared/player.js
+  var AD_HOST = /googleads|doubleclick|googletagmanager|googlesyndication|facebook|twitter|disqus|histats|analytics|adservice|popads|adsterra|propeller/i;
+  function findDirectMedia(html) {
+    const match = String(html || "").match(
+      /https?:\/\/[^"'\s\\]+\.(?:m3u8|mp4)(?:\?[^"'\s\\]*)?/i
+    );
+    return match ? match[0] : null;
+  }
+  function findIframe(html, baseUrl) {
+    const pattern = /<iframe[^>]+src=["']([^"']+)["']/gi;
+    const candidates = [];
+    for (let match = pattern.exec(html); match; match = pattern.exec(html)) {
+      const url = absoluteUrl(match[1], baseUrl);
+      if (!isHttpUrl(url)) continue;
+      if (AD_HOST.test(url)) continue;
+      if (candidates.indexOf(url) === -1) candidates.push(url);
+    }
+    for (const url of candidates) {
+      if (/blogger\.com|video\.g|drive\.google\.com|desustream|desudrive|mp4upload|vidhide|filemoon|streamtape/i.test(
+        url
+      )) {
+        return url;
+      }
+    }
+    return candidates.length ? candidates[0] : null;
+  }
+  function extractGooglevideo(html) {
+    const decoded = String(html || "").replace(/\\u003d/g, "=").replace(/\\u0026/g, "&").replace(/\\u0025/g, "%").replace(/\\u002F/g, "/").replace(/\\\//g, "/").replace(/\\&quot;/g, '"').replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+    const match = decoded.match(
+      /https?:\/\/[A-Za-z0-9.-]*googlevideo\.com\/videoplayback\?[^"'\s\\]*/i
+    );
+    if (!match) return null;
+    const url = match[0].replace(/\\+$/, "");
+    return isHttpUrl(url) ? url : null;
+  }
+  function isGoogleHost(url) {
+    return /blogger\.com|video\.g\?token|googlevideo\.com/i.test(url);
+  }
+  async function resolveEmbeddedVideo(embedUrl, { http, log, referer }) {
+    let current = embedUrl;
+    let siteReferer = referer || `${originOf(embedUrl)}/`;
+    const visited = {};
+    for (let depth = 0; depth <= 3 && current; depth += 1) {
+      if (visited[current]) return null;
+      visited[current] = true;
+      const html = await http.text(current, {
+        headers: { Referer: siteReferer }
+      });
+      if (!html) return null;
+      if (isGoogleHost(current) || html.indexOf("googlevideo.com/videoplayback") !== -1) {
+        const url = extractGooglevideo(html);
+        if (url) return { referer: "", subtitles: [], url };
+      }
+      let direct = null;
+      if (html.indexOf("eval(function(p,a,c,k,e,d)") !== -1) {
+        const unpacked = unpackPacker(html);
+        if (unpacked !== html) direct = findDirectMedia(unpacked);
+      }
+      if (!direct) direct = findDirectMedia(html);
+      if (direct) {
+        const url = absoluteUrl(direct, current);
+        return { referer: originOf(current), subtitles: [], url };
+      }
+      const next = findIframe(html, current);
+      if (!next || next === current) {
+        log.debug(`No playable url found at ${current}`);
+        return null;
+      }
+      siteReferer = `${originOf(current)}/`;
+      current = next;
+    }
+    return null;
+  }
+
+  // src/otakudesu/player.js
+  function resolveVideo(embedUrl, { http, log }) {
+    return resolveEmbeddedVideo(embedUrl, {
+      http,
+      log,
+      referer: `${OTAKUDESU.baseUrl}/`
+    });
+  }
+
   // src/otakudesu/provider.js
   async function getStreams(contentId, mediaType, season, episode) {
     const log = createLogger(OTAKUDESU.label);
     const http = createHttpClient({
-      userAgent: OTAKUDESU.userAgent,
       budgetMs: OTAKUDESU.budgetMs,
+      log,
       startedAt: Date.now(),
-      log
+      userAgent: OTAKUDESU.userAgent
     });
     const client = createOtakuDesuClient({ http, log });
     const type = mediaType === "movie" ? "movie" : "tv";
     const seasonNumber = toPositiveInt(season);
     const episodeNumber = toPositiveInt(episode) || 1;
-    log.info(`Request id=${contentId} type=${type} season=${seasonNumber} episode=${episodeNumber}`);
+    log.info(
+      `Request id=${contentId} type=${type} season=${seasonNumber} episode=${episodeNumber}`
+    );
     const meta = await resolveTitles({
       contentId,
-      mediaType: type,
-      season: seasonNumber,
       http,
+      locale: "id",
       log,
-      locale: "id"
+      mediaType: type,
+      season: seasonNumber
     });
     if (!meta.titles.length) {
       log.warn("No title candidates available; cannot search the site.");
       return [];
     }
     const match = await findBestMatch({
-      titles: meta.titles,
-      season: seasonNumber,
+      log,
       maxQueries: 5,
       search: client.search,
-      log
+      season: seasonNumber,
+      titles: meta.titles
     });
     if (!match) {
       log.warn("No matching anime found on OtakuDesu.");
@@ -726,9 +812,16 @@ var OtakudesuProvider = (() => {
     }
     const episodeData = await client.getEpisodes(match.item.url);
     if (!episodeData) return [];
-    const pickedEpisode = pickEpisode(episodeData, episodeNumber, seasonNumber, meta);
+    const pickedEpisode = pickEpisode(
+      episodeData,
+      episodeNumber,
+      seasonNumber,
+      meta
+    );
     if (!pickedEpisode) {
-      log.warn(`Episode ${episodeNumber} is not available for "${match.item.title}".`);
+      log.warn(
+        `Episode ${episodeNumber} is not available for "${match.item.title}".`
+      );
       return [];
     }
     const embedUrl = await client.getEmbedUrl(pickedEpisode.url);
@@ -739,20 +832,24 @@ var OtakudesuProvider = (() => {
       return [];
     }
     const isHls = resolved.url.indexOf(".m3u8") !== -1;
-    const quality = isHls ? await probeHlsQuality(http, resolved.url, resolved.referer || originOf(embedUrl)) || "HD" : "360p";
+    const quality = isHls ? await probeHlsQuality(
+      http,
+      resolved.url,
+      resolved.referer || originOf(embedUrl)
+    ) || "HD" : "360p";
     const displayTitle = cleanText(cleanCandidate(match.item.title)) || meta.name || OTAKUDESU.label;
     const label = type === "movie" ? "Movie" : `Episode ${pickedEpisode.number}`;
     return [
       buildStream({
-        name: OTAKUDESU.label,
-        provider: OTAKUDESU.providerId,
-        title: `${displayTitle} • ${label} • ${quality}`,
-        url: resolved.url,
-        quality,
-        type: isHls ? "hls" : "mp4",
         language: "id",
-        referer: resolved.referer,
+        name: OTAKUDESU.label,
         origin: resolved.referer,
+        provider: OTAKUDESU.providerId,
+        quality,
+        referer: resolved.referer,
+        title: `${displayTitle} • ${label} • ${quality}`,
+        type: isHls ? "hls" : "mp4",
+        url: resolved.url,
         userAgent: OTAKUDESU.userAgent
       })
     ];
@@ -774,14 +871,16 @@ var OtakudesuProvider = (() => {
       }
       if (complete) {
         const number = absolute + episode;
-        const candidate = episodeData.numbered.find((entry) => entry.number === number);
-        if (candidate) return { url: candidate.url, number };
+        const candidate = episodeData.numbered.find(
+          (entry) => entry.number === number
+        );
+        if (candidate) return { number, url: candidate.url };
       }
     }
     const direct = episodeData.numbered.find((entry) => entry.number === episode);
-    if (direct) return { url: direct.url, number: direct.number };
+    if (direct) return { number: direct.number, url: direct.url };
     if (episode === 1 && episodeData.unnumbered.length === 1) {
-      return { url: episodeData.unnumbered[0], number: 1 };
+      return { number: 1, url: episodeData.unnumbered[0] };
     }
     return null;
   }

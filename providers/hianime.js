@@ -24,184 +24,115 @@ var HianimeProvider = (() => {
     getStreams: () => getStreams
   });
 
-  // src/shared/dom.js
-  function loadHtml(html) {
-    const cheerioLib = typeof cheerio !== "undefined" && cheerio ? cheerio : globalThis.cheerio;
-    if (cheerioLib && typeof cheerioLib.load === "function") return cheerioLib.load(html);
-    const runtimeRequire = typeof globalThis !== "undefined" ? globalThis.require : null;
-    if (typeof runtimeRequire === "function") {
-      const loaded = runtimeRequire("cheerio");
-      if (loaded && typeof loaded.load === "function") return loaded.load(html);
-    }
-    throw new Error("cheerio is not available in this runtime");
-  }
-
-  // src/shared/text.js
-  function decodeEntities(value) {
-    return String(value === null || value === void 0 ? "" : value).replace(/&#x([0-9a-f]+);/gi, (match, hex) => String.fromCharCode(Number.parseInt(hex, 16))).replace(/&#(\d+);/g, (match, decimal) => String.fromCharCode(Number.parseInt(decimal, 10))).replace(/&nbsp;/gi, " ").replace(/&quot;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&");
-  }
-  function cleanText(value) {
-    return decodeEntities(value).replace(/\s+/g, " ").trim();
-  }
-  function normalize(value) {
-    let text = String(value === null || value === void 0 ? "" : value).toLowerCase();
-    try {
-      text = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    } catch (error) {
-    }
-    text = text.replace(/&/g, " and ").replace(/['`\u2019]/g, "");
-    return text.replace(/[^a-z0-9]+/g, " ").trim();
-  }
-  function cleanCandidate(value) {
-    let text = String(value === null || value === void 0 ? "" : value);
-    text = text.replace(/\([^)]*episode[^)]*\)/gi, " ");
-    text = text.replace(/\([^)]*(?:sub|dub|batch|bd|bluray|movie|tv|ova|ona|special)[^)]*\)/gi, " ");
-    text = text.replace(/subtitle\s+indonesia/gi, " ");
-    text = text.replace(/\bsub\s*indo\b/gi, " ");
-    text = text.replace(/\bdub\s*indo\b/gi, " ");
-    return text.replace(/\s+/g, " ").trim();
-  }
-  function canonicalSeason(value) {
-    let text = String(value === null || value === void 0 ? "" : value);
-    text = text.replace(/\b(\d+)(?:st|nd|rd|th)\s+season\b/g, "season $1");
-    text = text.replace(/\bs(\d+)\b/g, "season $1");
-    return text;
-  }
-  function ordinal(value) {
-    const mod100 = value % 100;
-    if (mod100 >= 11 && mod100 <= 13) return `${value}th`;
-    if (value % 10 === 1) return `${value}st`;
-    if (value % 10 === 2) return `${value}nd`;
-    if (value % 10 === 3) return `${value}rd`;
-    return `${value}th`;
-  }
-  function toPositiveInt(value) {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  }
-
-  // src/hianime/config.js
-  var HIANIME = {
-    label: "HiAnime",
-    providerId: "hianime",
-    baseUrl: "https://hianime.at",
-    embedBaseUrl: "https://zokoanime.video",
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    budgetMs: 5e4,
-    preferredServers: ["ZokoAnime", "HD-1", "HD-2", "HD-3"]
-  };
-
-  // src/hianime/client.js
-  function parseAnimeHref(href) {
-    const path = String(href || "").replace(/^https?:\/\/[^/]+/i, "").split("?")[0].split("#")[0];
-    const match = path.match(/\/(?:watch\/)?([^/]+?)-(\d+)\/?$/);
-    if (!match) return null;
-    return { slug: match[1], id: match[2] };
-  }
-  function sortServers(servers) {
-    const preference = {};
-    HIANIME.preferredServers.forEach((name, index) => {
-      preference[name] = index;
-    });
-    return servers.slice().sort((a, b) => {
-      if (a.type !== b.type) return a.type === "sub" ? -1 : 1;
-      const left = preference[a.name] === void 0 ? 99 : preference[a.name];
-      const right = preference[b.name] === void 0 ? 99 : preference[b.name];
-      return left - right;
-    });
-  }
-  function createHianimeClient({ http, log }) {
-    const baseUrl = HIANIME.baseUrl;
-    const siteReferer = `${baseUrl}/`;
-    async function search(query) {
-      const html = await http.text(`${baseUrl}/search?keyword=${encodeURIComponent(query)}`, {
-        headers: { Referer: siteReferer }
-      });
-      if (!html) return [];
-      const $ = loadHtml(html);
-      const results = [];
-      $(".flw-item").each(function(index, element) {
-        const item = $(element);
-        const link = item.find(".film-name a").first();
-        if (!link || !link.length) return;
-        const info = parseAnimeHref(link.attr("href"));
-        if (!info) return;
-        const title = cleanText(link.attr("title") || link.text());
-        if (!title) return;
-        results.push({
-          title,
-          jname: cleanText(link.attr("data-jname")),
-          id: info.id,
-          slug: info.slug,
-          pageUrl: `${baseUrl}/watch/${info.slug}-${info.id}`
-        });
-      });
-      log.debug(`Search "${query}" returned ${results.length} result(s).`);
-      return results;
-    }
-    async function getEpisodes(anime) {
-      const data = await http.json(`${baseUrl}/api/theme/episode/list/${anime.id}`, {
-        headers: {
-          "X-Requested-With": "XMLHttpRequest",
-          Referer: anime.pageUrl
-        }
-      });
-      if (!data || !data.html) {
-        log.warn(`Episode list is unavailable for anime ${anime.id}.`);
-        return null;
-      }
-      const $ = loadHtml(data.html);
-      const byNumber = {};
-      let total = 0;
-      $(".ep-item").each(function(index, element) {
-        const item = $(element);
-        const episodeId = cleanText(item.attr("data-id"));
-        const number = Number.parseInt(item.attr("data-number"), 10);
-        if (!episodeId || !(number > 0) || byNumber[number]) return;
-        byNumber[number] = episodeId;
-        total += 1;
-      });
-      log.debug(`Anime ${anime.id} exposes ${total} episode(s).`);
-      return { byNumber, total };
-    }
-    async function getServers(episodeId) {
-      const data = await http.json(
-        `${baseUrl}/api/theme/episode/servers?episodeId=${encodeURIComponent(episodeId)}`,
-        {
-          headers: {
-            "X-Requested-With": "XMLHttpRequest",
-            Referer: siteReferer
-          }
+  // src/shared/http.js
+  var HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+  var REQUEST_TIMEOUT_MS = 15e3;
+  function withTimeout(promise, ms) {
+    if (typeof setTimeout !== "function" || !(ms > 0)) return promise;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`request timed out after ${ms}ms`)),
+        ms
+      );
+      const clear = typeof clearTimeout === "function" ? clearTimeout : () => {
+      };
+      promise.then(
+        (value) => {
+          clear(timer);
+          resolve(value);
+        },
+        (error) => {
+          clear(timer);
+          reject(error);
         }
       );
-      if (!data || !data.html) {
-        log.warn(`Server list is unavailable for episode ${episodeId}.`);
-        return [];
+    });
+  }
+  function createHttpClient({
+    userAgent,
+    accept = HTML_ACCEPT,
+    defaultHeaders = {},
+    budgetMs = 5e4,
+    startedAt = Date.now(),
+    log
+  }) {
+    const remaining = () => budgetMs - (Date.now() - startedAt);
+    async function text(url, options = {}) {
+      if (remaining() <= 0) {
+        log.warn(`Time budget exhausted, skipping ${url}`);
+        return null;
       }
-      const $ = loadHtml(data.html);
-      const servers = [];
-      const seen = {};
-      $(".server-item").each(function(index, element) {
-        const item = $(element);
-        const hash = item.attr("data-hash");
-        if (!hash) return;
-        let url = null;
-        try {
-          url = atob(hash);
-        } catch (error) {
-          url = null;
+      const headers = Object.assign(
+        {
+          Accept: accept,
+          "Accept-Language": "en-US,en;q=0.9",
+          "User-Agent": userAgent
+        },
+        defaultHeaders,
+        options.headers || {}
+      );
+      const init = { headers, method: options.method || "GET" };
+      if (options.body !== void 0 && options.body !== null)
+        init.body = options.body;
+      try {
+        const timeout = Math.min(REQUEST_TIMEOUT_MS, Math.max(1e3, remaining()));
+        const response = await withTimeout(fetch(url, init), timeout);
+        if (!response || response.status === 0 || !response.ok) {
+          log.warn(
+            `HTTP ${response ? response.status : "no-response"} for ${url}`
+          );
+          return null;
         }
-        if (!url || !/^https?:\/\//i.test(url)) return;
-        const type = (item.attr("data-type") || "sub").toLowerCase();
-        const name = cleanText(item.attr("data-server-name") || "Server");
-        const key = `${url}|${type}`;
-        if (seen[key]) return;
-        seen[key] = true;
-        servers.push({ name, type, url });
-      });
-      return sortServers(servers);
+        return await response.text() || "";
+      } catch (error) {
+        log.warn(
+          `Request failed for ${url}: ${error?.message ? error.message : error}`
+        );
+        return null;
+      }
     }
-    return { search, getEpisodes, getServers };
+    async function json(url, options = {}) {
+      const payload = await text(
+        url,
+        Object.assign({}, options, {
+          headers: Object.assign(
+            { Accept: "application/json" },
+            options.headers || {}
+          )
+        })
+      );
+      if (!payload) return null;
+      try {
+        return JSON.parse(payload);
+      } catch (_error) {
+        log.warn(`Invalid JSON from ${url}`);
+        return null;
+      }
+    }
+    return { budgetMs, json, remaining, startedAt, text };
+  }
+
+  // src/shared/log.js
+  function createLogger(tag) {
+    const prefix = `[${tag}]`;
+    function write(level, args) {
+      const target = console[level] || console.log;
+      target(prefix, ...args);
+    }
+    return {
+      debug(...args) {
+        write("log", args);
+      },
+      error(...args) {
+        write("error", args);
+      },
+      info(...args) {
+        write("info", args);
+      },
+      warn(...args) {
+        write("warn", args);
+      }
+    };
   }
 
   // src/shared/media.js
@@ -244,14 +175,14 @@ var HianimeProvider = (() => {
     if (referer) headers.Referer = ensureTrailingSlash(referer);
     if (origin) headers.Origin = origin;
     const stream = {
-      name,
-      title: streamTitle(title),
-      url,
-      quality: quality || "HD",
-      type,
+      headers,
       language,
+      name,
       provider,
-      headers
+      quality: quality || "HD",
+      title: streamTitle(title),
+      type,
+      url
     };
     if (Array.isArray(subtitles) && subtitles.length) {
       stream.subtitles = subtitles;
@@ -267,212 +198,68 @@ var HianimeProvider = (() => {
     if (!playlist) return null;
     const pattern = /RESOLUTION=\d+x(\d+)/g;
     let best = 0;
-    let match;
-    while (match = pattern.exec(playlist)) {
+    let match = pattern.exec(playlist);
+    while (match) {
       const height = Number.parseInt(match[1], 10);
       if (height > best && height <= 4320) best = height;
+      match = pattern.exec(playlist);
     }
     return best > 0 ? `${best}p` : null;
   }
 
-  // src/hianime/embed.js
-  var DECODE_KEY = "otaku-embed-v1";
-  var PAYLOAD_PATTERN = /window\.__P\s*=\s*["']([^"']+)["']/;
-  function decodeUtf8(input) {
-    let output = "";
-    let index = 0;
-    while (index < input.length) {
-      const first = input.charCodeAt(index) & 255;
-      index += 1;
-      if (first < 128) {
-        output += String.fromCharCode(first);
-      } else if (first >= 192 && first < 224) {
-        output += String.fromCharCode((first & 31) << 6 | input.charCodeAt(index) & 63);
-        index += 1;
-      } else if (first >= 224 && first < 240) {
-        output += String.fromCharCode(
-          (first & 15) << 12 | (input.charCodeAt(index) & 63) << 6 | input.charCodeAt(index + 1) & 63
-        );
-        index += 2;
-      } else if (first >= 240 && first < 248) {
-        let codePoint = (first & 7) << 18 | (input.charCodeAt(index) & 63) << 12 | (input.charCodeAt(index + 1) & 63) << 6 | input.charCodeAt(index + 2) & 63;
-        index += 3;
-        codePoint -= 65536;
-        output += String.fromCharCode(55296 + (codePoint >> 10), 56320 + (codePoint & 1023));
-      } else {
-        output += String.fromCharCode(first);
-      }
-    }
-    return output;
+  // src/shared/text.js
+  function decodeEntities(value) {
+    return String(value === null || value === void 0 ? "" : value).replace(
+      /&#x([0-9a-f]+);/gi,
+      (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16))
+    ).replace(
+      /&#(\d+);/g,
+      (_match, decimal) => String.fromCharCode(Number.parseInt(decimal, 10))
+    ).replace(/&nbsp;/gi, " ").replace(/&quot;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&");
   }
-  function deobfuscate(encoded) {
+  function cleanText(value) {
+    return decodeEntities(value).replace(/\s+/g, " ").trim();
+  }
+  function normalize(value) {
+    let text = String(
+      value === null || value === void 0 ? "" : value
+    ).toLowerCase();
     try {
-      const raw = atob(encoded);
-      let xored = "";
-      for (let index = 0; index < raw.length; index += 1) {
-        xored += String.fromCharCode(raw.charCodeAt(index) ^ DECODE_KEY.charCodeAt(index % DECODE_KEY.length));
-      }
-      const json = decodeUtf8(xored);
-      try {
-        return JSON.parse(json);
-      } catch (error) {
-        return JSON.parse(xored);
-      }
-    } catch (error) {
-      return null;
+      text = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    } catch (_error) {
     }
+    text = text.replace(/&/g, " and ").replace(/['`\u2019]/g, "");
+    return text.replace(/[^a-z0-9]+/g, " ").trim();
   }
-  function pickSource(config) {
-    if (!config) return null;
-    let source = config.src;
-    if (!source && Array.isArray(config.sources) && config.sources.length) {
-      const first = config.sources[0];
-      source = first && (first.file || first.url);
-    }
-    if (!source && config.file) source = config.file;
-    if (!source || typeof source !== "string") return null;
-    const normalized = absoluteUrl(source, HIANIME.embedBaseUrl);
-    return isHttpUrl(normalized) ? normalized : null;
+  function cleanCandidate(value) {
+    let text = String(value === null || value === void 0 ? "" : value);
+    text = text.replace(/\([^)]*episode[^)]*\)/gi, " ");
+    text = text.replace(
+      /\([^)]*(?:sub|dub|batch|bd|bluray|movie|tv|ova|ona|special)[^)]*\)/gi,
+      " "
+    );
+    text = text.replace(/subtitle\s+indonesia/gi, " ");
+    text = text.replace(/\bsub\s*indo\b/gi, " ");
+    text = text.replace(/\bdub\s*indo\b/gi, " ");
+    return text.replace(/\s+/g, " ").trim();
   }
-  function mapSubtitles(entries, origin) {
-    const subtitles = [];
-    if (!Array.isArray(entries)) return subtitles;
-    for (const entry of entries) {
-      if (!entry || !entry.src) continue;
-      const url = absoluteUrl(entry.src, origin);
-      if (!isHttpUrl(url)) continue;
-      subtitles.push({
-        url,
-        language: String(entry.lang || "und").toLowerCase(),
-        name: entry.label || entry.lang || "Subtitle",
-        headers: {
-          "User-Agent": HIANIME.userAgent,
-          Referer: `${origin}/`,
-          Origin: origin
-        }
-      });
-    }
-    return subtitles;
+  function canonicalSeason(value) {
+    let text = String(value === null || value === void 0 ? "" : value);
+    text = text.replace(/\b(\d+)(?:st|nd|rd|th)\s+season\b/g, "season $1");
+    text = text.replace(/\bs(\d+)\b/g, "season $1");
+    return text;
   }
-  async function resolveEmbed(embedUrl, { http, log }) {
-    const siteOrigin = HIANIME.baseUrl;
-    const html = await http.text(embedUrl, {
-      headers: { Referer: `${siteOrigin}/`, Origin: siteOrigin }
-    });
-    if (!html) return null;
-    const payload = html.match(PAYLOAD_PATTERN);
-    if (!payload) {
-      log.debug(`No player payload at ${embedUrl}`);
-      return null;
-    }
-    const config = deobfuscate(payload[1]);
-    const source = pickSource(config);
-    if (!source) {
-      log.debug(`Player payload has no stream url at ${embedUrl}`);
-      return null;
-    }
-    const origin = originOf(embedUrl);
-    return {
-      url: source,
-      origin,
-      subtitles: mapSubtitles(config ? config.subtitles : null, origin)
-    };
+  function ordinal(value) {
+    const mod100 = value % 100;
+    if (mod100 >= 11 && mod100 <= 13) return `${value}th`;
+    if (value % 10 === 1) return `${value}st`;
+    if (value % 10 === 2) return `${value}nd`;
+    if (value % 10 === 3) return `${value}rd`;
+    return `${value}th`;
   }
-
-  // src/shared/http.js
-  var HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
-  var REQUEST_TIMEOUT_MS = 15e3;
-  function withTimeout(promise, ms) {
-    if (typeof setTimeout !== "function" || !(ms > 0)) return promise;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`request timed out after ${ms}ms`)), ms);
-      const clear = typeof clearTimeout === "function" ? clearTimeout : function() {
-      };
-      promise.then(
-        (value) => {
-          clear(timer);
-          resolve(value);
-        },
-        (error) => {
-          clear(timer);
-          reject(error);
-        }
-      );
-    });
-  }
-  function createHttpClient({
-    userAgent,
-    accept = HTML_ACCEPT,
-    defaultHeaders = {},
-    budgetMs = 5e4,
-    startedAt = Date.now(),
-    log
-  }) {
-    const remaining = () => budgetMs - (Date.now() - startedAt);
-    async function text(url, options = {}) {
-      if (remaining() <= 0) {
-        log.warn(`Time budget exhausted, skipping ${url}`);
-        return null;
-      }
-      const headers = Object.assign(
-        { "User-Agent": userAgent, Accept: accept, "Accept-Language": "en-US,en;q=0.9" },
-        defaultHeaders,
-        options.headers || {}
-      );
-      const init = { method: options.method || "GET", headers };
-      if (options.body !== void 0 && options.body !== null) init.body = options.body;
-      try {
-        const timeout = Math.min(REQUEST_TIMEOUT_MS, Math.max(1e3, remaining()));
-        const response = await withTimeout(fetch(url, init), timeout);
-        if (!response || response.status === 0 || !response.ok) {
-          log.warn(`HTTP ${response ? response.status : "no-response"} for ${url}`);
-          return null;
-        }
-        return await response.text() || "";
-      } catch (error) {
-        log.warn(`Request failed for ${url}: ${error && error.message ? error.message : error}`);
-        return null;
-      }
-    }
-    async function json(url, options = {}) {
-      const payload = await text(
-        url,
-        Object.assign({}, options, {
-          headers: Object.assign({ Accept: "application/json" }, options.headers || {})
-        })
-      );
-      if (!payload) return null;
-      try {
-        return JSON.parse(payload);
-      } catch (error) {
-        log.warn(`Invalid JSON from ${url}`);
-        return null;
-      }
-    }
-    return { text, json, remaining, startedAt, budgetMs };
-  }
-
-  // src/shared/log.js
-  function createLogger(tag) {
-    const prefix = `[${tag}]`;
-    function write(level, args) {
-      const target = console[level] || console.log;
-      target(prefix, ...args);
-    }
-    return {
-      debug(...args) {
-        write("log", args);
-      },
-      info(...args) {
-        write("info", args);
-      },
-      warn(...args) {
-        write("warn", args);
-      },
-      error(...args) {
-        write("error", args);
-      }
-    };
+  function toPositiveInt(value) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
   // src/shared/selection.js
@@ -508,7 +295,13 @@ var HianimeProvider = (() => {
     }
     return Math.max(0, score);
   }
-  async function findBestMatch({ titles, season, maxQueries = 4, search, log }) {
+  async function findBestMatch({
+    titles,
+    season,
+    maxQueries = 4,
+    search,
+    log
+  }) {
     const queries = [];
     const seen = {};
     for (const title of titles) {
@@ -536,7 +329,9 @@ var HianimeProvider = (() => {
       if (index >= 1 && best && best.score >= 75) break;
     }
     if (log && best) {
-      log.debug(`Matched "${best.item.title}" with score ${best.score.toFixed(2)}`);
+      log.debug(
+        `Matched "${best.item.title}" with score ${best.score.toFixed(2)}`
+      );
     }
     return best && best.score >= 55 ? best : null;
   }
@@ -558,31 +353,41 @@ var HianimeProvider = (() => {
     if (tracker) {
       return {
         kind: tracker[1].toLowerCase(),
-        value: tracker[2],
-        seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null
+        seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null,
+        value: tracker[2]
       };
     }
     const imdb = raw.match(IMDB_ID);
-    if (imdb) return { kind: "imdb", value: imdb[1], seasonSuffix: null };
+    if (imdb) return { kind: "imdb", seasonSuffix: null, value: imdb[1] };
     const numeric = raw.replace(ID_PREFIX, "");
-    if (/^\d+$/.test(numeric)) return { kind: "tmdb", value: numeric, seasonSuffix: null };
-    return { kind: "unknown", value: raw, seasonSuffix: null };
+    if (/^\d+$/.test(numeric))
+      return { kind: "tmdb", seasonSuffix: null, value: numeric };
+    return { kind: "unknown", seasonSuffix: null, value: raw };
   }
-  async function resolveTitles({ contentId, mediaType, season, http, log, locale = "en" }) {
+  async function resolveTitles({
+    contentId,
+    mediaType,
+    season,
+    http,
+    log,
+    locale = "en"
+  }) {
     const parsed = parseContentId(contentId);
     const result = {
-      titles: [],
-      seasonCounts: {},
-      name: "",
       malId: null,
-      seasonSuffix: parsed.seasonSuffix
+      name: "",
+      seasonCounts: {},
+      seasonSuffix: parsed.seasonSuffix,
+      titles: []
     };
     if (parsed.kind === "mal") {
       result.malId = parsed.value;
       return result;
     }
     if (parsed.kind !== "tmdb" && parsed.kind !== "imdb") {
-      log.warn(`Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`);
+      log.warn(
+        `Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`
+      );
       return result;
     }
     const apiKey = readTmdbKey();
@@ -597,8 +402,8 @@ var HianimeProvider = (() => {
         `${TMDB_API_BASE}/find/${encodeURIComponent(tmdbId)}?api_key=${apiKey}&external_source=imdb_id`
       );
       const list = found ? type === "movie" ? found.movie_results : found.tv_results : null;
-      const first = list && list.length ? list[0] : null;
-      if (!first || !first.id) {
+      const first = list?.length ? list[0] : null;
+      if (!first?.id) {
         log.warn(`IMDb id ${tmdbId} could not be resolved to a TMDB id.`);
         return result;
       }
@@ -684,14 +489,268 @@ var HianimeProvider = (() => {
     }
   }
 
+  // src/shared/dom.js
+  function loadHtml(html) {
+    const cheerioLib = typeof cheerio !== "undefined" && cheerio ? cheerio : globalThis.cheerio;
+    if (cheerioLib && typeof cheerioLib.load === "function")
+      return cheerioLib.load(html);
+    const runtimeRequire = typeof globalThis !== "undefined" ? globalThis.require : null;
+    if (typeof runtimeRequire === "function") {
+      const loaded = runtimeRequire("cheerio");
+      if (loaded && typeof loaded.load === "function") return loaded.load(html);
+    }
+    throw new Error("cheerio is not available in this runtime");
+  }
+
+  // src/hianime/config.js
+  var HIANIME = {
+    baseUrl: "https://hianime.at",
+    budgetMs: 5e4,
+    embedBaseUrl: "https://zokoanime.video",
+    label: "HiAnime",
+    preferredServers: ["ZokoAnime", "HD-1", "HD-2", "HD-3"],
+    providerId: "hianime",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  };
+
+  // src/hianime/client.js
+  function parseAnimeHref(href) {
+    const path = String(href || "").replace(/^https?:\/\/[^/]+/i, "").split("?")[0].split("#")[0];
+    const match = path.match(/\/(?:watch\/)?([^/]+?)-(\d+)\/?$/);
+    if (!match) return null;
+    return { id: match[2], slug: match[1] };
+  }
+  function sortServers(servers) {
+    const preference = {};
+    HIANIME.preferredServers.forEach((name, index) => {
+      preference[name] = index;
+    });
+    return servers.slice().sort((a, b) => {
+      if (a.type !== b.type) return a.type === "sub" ? -1 : 1;
+      const left = preference[a.name] === void 0 ? 99 : preference[a.name];
+      const right = preference[b.name] === void 0 ? 99 : preference[b.name];
+      return left - right;
+    });
+  }
+  function createHianimeClient({ http, log }) {
+    const baseUrl = HIANIME.baseUrl;
+    const siteReferer = `${baseUrl}/`;
+    async function search(query) {
+      const html = await http.text(
+        `${baseUrl}/search?keyword=${encodeURIComponent(query)}`,
+        {
+          headers: { Referer: siteReferer }
+        }
+      );
+      if (!html) return [];
+      const $ = loadHtml(html);
+      const results = [];
+      $(".flw-item").each((_index, element) => {
+        const item = $(element);
+        const link = item.find(".film-name a").first();
+        if (!link?.length) return;
+        const info = parseAnimeHref(link.attr("href"));
+        if (!info) return;
+        const title = cleanText(link.attr("title") || link.text());
+        if (!title) return;
+        results.push({
+          id: info.id,
+          jname: cleanText(link.attr("data-jname")),
+          pageUrl: `${baseUrl}/watch/${info.slug}-${info.id}`,
+          slug: info.slug,
+          title
+        });
+      });
+      log.debug(`Search "${query}" returned ${results.length} result(s).`);
+      return results;
+    }
+    async function getEpisodes(anime) {
+      const data = await http.json(
+        `${baseUrl}/api/theme/episode/list/${anime.id}`,
+        {
+          headers: {
+            Referer: anime.pageUrl,
+            "X-Requested-With": "XMLHttpRequest"
+          }
+        }
+      );
+      if (!data?.html) {
+        log.warn(`Episode list is unavailable for anime ${anime.id}.`);
+        return null;
+      }
+      const $ = loadHtml(data.html);
+      const byNumber = {};
+      let total = 0;
+      $(".ep-item").each((_index, element) => {
+        const item = $(element);
+        const episodeId = cleanText(item.attr("data-id"));
+        const number = Number.parseInt(item.attr("data-number"), 10);
+        if (!episodeId || !(number > 0) || byNumber[number]) return;
+        byNumber[number] = episodeId;
+        total += 1;
+      });
+      log.debug(`Anime ${anime.id} exposes ${total} episode(s).`);
+      return { byNumber, total };
+    }
+    async function getServers(episodeId) {
+      const data = await http.json(
+        `${baseUrl}/api/theme/episode/servers?episodeId=${encodeURIComponent(episodeId)}`,
+        {
+          headers: {
+            Referer: siteReferer,
+            "X-Requested-With": "XMLHttpRequest"
+          }
+        }
+      );
+      if (!data?.html) {
+        log.warn(`Server list is unavailable for episode ${episodeId}.`);
+        return [];
+      }
+      const $ = loadHtml(data.html);
+      const servers = [];
+      const seen = {};
+      $(".server-item").each((_index, element) => {
+        const item = $(element);
+        const hash = item.attr("data-hash");
+        if (!hash) return;
+        let url = null;
+        try {
+          url = atob(hash);
+        } catch (_error) {
+          url = null;
+        }
+        if (!url || !/^https?:\/\//i.test(url)) return;
+        const type = (item.attr("data-type") || "sub").toLowerCase();
+        const name = cleanText(item.attr("data-server-name") || "Server");
+        const key = `${url}|${type}`;
+        if (seen[key]) return;
+        seen[key] = true;
+        servers.push({ name, type, url });
+      });
+      return sortServers(servers);
+    }
+    return { getEpisodes, getServers, search };
+  }
+
+  // src/hianime/embed.js
+  var DECODE_KEY = "otaku-embed-v1";
+  var PAYLOAD_PATTERN = /window\.__P\s*=\s*["']([^"']+)["']/;
+  function decodeUtf8(input) {
+    let output = "";
+    let index = 0;
+    while (index < input.length) {
+      const first = input.charCodeAt(index) & 255;
+      index += 1;
+      if (first < 128) {
+        output += String.fromCharCode(first);
+      } else if (first >= 192 && first < 224) {
+        output += String.fromCharCode(
+          (first & 31) << 6 | input.charCodeAt(index) & 63
+        );
+        index += 1;
+      } else if (first >= 224 && first < 240) {
+        output += String.fromCharCode(
+          (first & 15) << 12 | (input.charCodeAt(index) & 63) << 6 | input.charCodeAt(index + 1) & 63
+        );
+        index += 2;
+      } else if (first >= 240 && first < 248) {
+        let codePoint = (first & 7) << 18 | (input.charCodeAt(index) & 63) << 12 | (input.charCodeAt(index + 1) & 63) << 6 | input.charCodeAt(index + 2) & 63;
+        index += 3;
+        codePoint -= 65536;
+        output += String.fromCharCode(
+          55296 + (codePoint >> 10),
+          56320 + (codePoint & 1023)
+        );
+      } else {
+        output += String.fromCharCode(first);
+      }
+    }
+    return output;
+  }
+  function deobfuscate(encoded) {
+    try {
+      const raw = atob(encoded);
+      let xored = "";
+      for (let index = 0; index < raw.length; index += 1) {
+        xored += String.fromCharCode(
+          raw.charCodeAt(index) ^ DECODE_KEY.charCodeAt(index % DECODE_KEY.length)
+        );
+      }
+      const json = decodeUtf8(xored);
+      try {
+        return JSON.parse(json);
+      } catch (_error) {
+        return JSON.parse(xored);
+      }
+    } catch (_error) {
+      return null;
+    }
+  }
+  function pickSource(config) {
+    if (!config) return null;
+    let source = config.src;
+    if (!source && Array.isArray(config.sources) && config.sources.length) {
+      const first = config.sources[0];
+      source = first && (first.file || first.url);
+    }
+    if (!source && config.file) source = config.file;
+    if (!source || typeof source !== "string") return null;
+    const normalized = absoluteUrl(source, HIANIME.embedBaseUrl);
+    return isHttpUrl(normalized) ? normalized : null;
+  }
+  function mapSubtitles(entries, origin) {
+    const subtitles = [];
+    if (!Array.isArray(entries)) return subtitles;
+    for (const entry of entries) {
+      if (!entry?.src) continue;
+      const url = absoluteUrl(entry.src, origin);
+      if (!isHttpUrl(url)) continue;
+      subtitles.push({
+        headers: {
+          Origin: origin,
+          Referer: `${origin}/`,
+          "User-Agent": HIANIME.userAgent
+        },
+        language: String(entry.lang || "und").toLowerCase(),
+        name: entry.label || entry.lang || "Subtitle",
+        url
+      });
+    }
+    return subtitles;
+  }
+  async function resolveEmbed(embedUrl, { http, log }) {
+    const siteOrigin = HIANIME.baseUrl;
+    const html = await http.text(embedUrl, {
+      headers: { Origin: siteOrigin, Referer: `${siteOrigin}/` }
+    });
+    if (!html) return null;
+    const payload = html.match(PAYLOAD_PATTERN);
+    if (!payload) {
+      log.debug(`No player payload at ${embedUrl}`);
+      return null;
+    }
+    const config = deobfuscate(payload[1]);
+    const source = pickSource(config);
+    if (!source) {
+      log.debug(`Player payload has no stream url at ${embedUrl}`);
+      return null;
+    }
+    const origin = originOf(embedUrl);
+    return {
+      origin,
+      subtitles: mapSubtitles(config ? config.subtitles : null, origin),
+      url: source
+    };
+  }
+
   // src/hianime/provider.js
   async function getStreams(contentId, mediaType, season, episode) {
     const log = createLogger(HIANIME.label);
     const http = createHttpClient({
-      userAgent: HIANIME.userAgent,
       budgetMs: HIANIME.budgetMs,
+      log,
       startedAt: Date.now(),
-      log
+      userAgent: HIANIME.userAgent
     });
     const client = createHianimeClient({ http, log });
     const type = mediaType === "movie" ? "movie" : "tv";
@@ -699,27 +758,32 @@ var HianimeProvider = (() => {
     const episodeNumber = toPositiveInt(episode) || 1;
     const parsed = parseContentId(contentId);
     const effectiveEpisode = parsed.kind === "mal" && !toPositiveInt(episode) ? parsed.seasonSuffix || episodeNumber : episodeNumber;
-    log.info(`Request id=${contentId} type=${type} season=${seasonNumber} episode=${effectiveEpisode}`);
+    log.info(
+      `Request id=${contentId} type=${type} season=${seasonNumber} episode=${effectiveEpisode}`
+    );
     if (parsed.kind === "mal") {
-      return resolveByMal(parsed.value, effectiveEpisode, type === "movie", { http, log });
+      return resolveByMal(parsed.value, effectiveEpisode, type === "movie", {
+        http,
+        log
+      });
     }
     const meta = await resolveTitles({
       contentId,
-      mediaType: type,
-      season: seasonNumber,
       http,
+      locale: "en",
       log,
-      locale: "en"
+      mediaType: type,
+      season: seasonNumber
     });
     if (!meta.titles.length) {
       log.warn("No title candidates available; cannot search the site.");
       return [];
     }
     const match = await findBestMatch({
-      titles: meta.titles,
-      season: seasonNumber,
+      log,
       search: client.search,
-      log
+      season: seasonNumber,
+      titles: meta.titles
     });
     if (!match) {
       log.warn("No matching anime found on HiAnime.");
@@ -727,9 +791,16 @@ var HianimeProvider = (() => {
     }
     const episodeMap = await client.getEpisodes(match.item);
     if (!episodeMap) return [];
-    const resolvedEpisode = resolveEpisodeNumber(episodeMap, seasonNumber, episodeNumber, meta);
+    const resolvedEpisode = resolveEpisodeNumber(
+      episodeMap,
+      seasonNumber,
+      episodeNumber,
+      meta
+    );
     if (!resolvedEpisode) {
-      log.warn(`Episode ${episodeNumber} is not available for "${match.item.title}".`);
+      log.warn(
+        `Episode ${episodeNumber} is not available for "${match.item.title}".`
+      );
       return [];
     }
     const servers = await client.getServers(episodeMap.byNumber[resolvedEpisode]);
@@ -773,16 +844,16 @@ var HianimeProvider = (() => {
       const quality = await probeHlsQuality(http, resolved.url, resolved.origin);
       streams.push(
         buildStream({
-          name: HIANIME.label,
-          provider: HIANIME.providerId,
-          title: `${label} • ${server.name} (${server.type.toUpperCase()})`,
-          url: resolved.url,
-          quality,
-          type: "hls",
           language: server.type === "dub" ? "en" : "ja",
-          referer: resolved.origin,
+          name: HIANIME.label,
           origin: resolved.origin,
+          provider: HIANIME.providerId,
+          quality,
+          referer: resolved.origin,
           subtitles: resolved.subtitles,
+          title: `${label} • ${server.name} (${server.type.toUpperCase()})`,
+          type: "hls",
+          url: resolved.url,
           userAgent: HIANIME.userAgent
         })
       );
@@ -800,16 +871,16 @@ var HianimeProvider = (() => {
       const quality = await probeHlsQuality(http, resolved.url, resolved.origin);
       streams.push(
         buildStream({
-          name: HIANIME.label,
-          provider: HIANIME.providerId,
-          title: `${isMovie ? "Movie" : `Episode ${episode}`} • ZokoAnime (${kind.toUpperCase()})`,
-          url: resolved.url,
-          quality,
-          type: "hls",
           language: kind === "dub" ? "en" : "ja",
-          referer: resolved.origin,
+          name: HIANIME.label,
           origin: resolved.origin,
+          provider: HIANIME.providerId,
+          quality,
+          referer: resolved.origin,
           subtitles: resolved.subtitles,
+          title: `${isMovie ? "Movie" : `Episode ${episode}`} • ZokoAnime (${kind.toUpperCase()})`,
+          type: "hls",
+          url: resolved.url,
           userAgent: HIANIME.userAgent
         })
       );

@@ -24,30 +24,26 @@ var OploverzProvider = (() => {
     getStreams: () => getStreams
   });
 
-  // src/shared/dom.js
-  function loadHtml(html) {
-    const cheerioLib = typeof cheerio !== "undefined" && cheerio ? cheerio : globalThis.cheerio;
-    if (cheerioLib && typeof cheerioLib.load === "function") return cheerioLib.load(html);
-    const runtimeRequire = typeof globalThis !== "undefined" ? globalThis.require : null;
-    if (typeof runtimeRequire === "function") {
-      const loaded = runtimeRequire("cheerio");
-      if (loaded && typeof loaded.load === "function") return loaded.load(html);
-    }
-    throw new Error("cheerio is not available in this runtime");
-  }
-
   // src/shared/text.js
   function decodeEntities(value) {
-    return String(value === null || value === void 0 ? "" : value).replace(/&#x([0-9a-f]+);/gi, (match, hex) => String.fromCharCode(Number.parseInt(hex, 16))).replace(/&#(\d+);/g, (match, decimal) => String.fromCharCode(Number.parseInt(decimal, 10))).replace(/&nbsp;/gi, " ").replace(/&quot;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&");
+    return String(value === null || value === void 0 ? "" : value).replace(
+      /&#x([0-9a-f]+);/gi,
+      (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16))
+    ).replace(
+      /&#(\d+);/g,
+      (_match, decimal) => String.fromCharCode(Number.parseInt(decimal, 10))
+    ).replace(/&nbsp;/gi, " ").replace(/&quot;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&");
   }
   function cleanText(value) {
     return decodeEntities(value).replace(/\s+/g, " ").trim();
   }
   function normalize(value) {
-    let text = String(value === null || value === void 0 ? "" : value).toLowerCase();
+    let text = String(
+      value === null || value === void 0 ? "" : value
+    ).toLowerCase();
     try {
       text = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    } catch (error) {
+    } catch (_error) {
     }
     text = text.replace(/&/g, " and ").replace(/['`\u2019]/g, "");
     return text.replace(/[^a-z0-9]+/g, " ").trim();
@@ -55,7 +51,10 @@ var OploverzProvider = (() => {
   function cleanCandidate(value) {
     let text = String(value === null || value === void 0 ? "" : value);
     text = text.replace(/\([^)]*episode[^)]*\)/gi, " ");
-    text = text.replace(/\([^)]*(?:sub|dub|batch|bd|bluray|movie|tv|ova|ona|special)[^)]*\)/gi, " ");
+    text = text.replace(
+      /\([^)]*(?:sub|dub|batch|bd|bluray|movie|tv|ova|ona|special)[^)]*\)/gi,
+      " "
+    );
     text = text.replace(/subtitle\s+indonesia/gi, " ");
     text = text.replace(/\bsub\s*indo\b/gi, " ");
     text = text.replace(/\bdub\s*indo\b/gi, " ");
@@ -87,17 +86,21 @@ var OploverzProvider = (() => {
     return match ? toPositiveInt(match[1]) : null;
   }
   function episodeNumberFromUrl(value) {
-    const match = String(value === null || value === void 0 ? "" : value).match(
-      /(?:episode|ep)[-_/]?0*(\d+)/i
-    );
+    const match = String(
+      value === null || value === void 0 ? "" : value
+    ).match(/(?:episode|ep)[-_/]?0*(\d+)/i);
     return match ? toPositiveInt(match[1]) : null;
   }
   function pickEpisode(entries, episode, season, seasonCounts) {
-    const list = (Array.isArray(entries) ? entries : []).filter((entry) => entry && entry.url);
+    const list = (Array.isArray(entries) ? entries : []).filter(
+      (entry) => entry?.url
+    );
     if (!list.length) return null;
     const counts = seasonCounts || {};
     const expected = season ? counts[season] : null;
-    const isCollection = Boolean(season && season > 1 && expected && list.length > expected);
+    const isCollection = Boolean(
+      season && season > 1 && expected && list.length > expected
+    );
     if (isCollection) {
       let absolute = 0;
       let complete = true;
@@ -119,6 +122,117 @@ var OploverzProvider = (() => {
     if (direct) return direct;
     if (episode === 1 && list.length === 1) return list[0];
     return null;
+  }
+
+  // src/shared/http.js
+  var HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+  var REQUEST_TIMEOUT_MS = 15e3;
+  function withTimeout(promise, ms) {
+    if (typeof setTimeout !== "function" || !(ms > 0)) return promise;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`request timed out after ${ms}ms`)),
+        ms
+      );
+      const clear = typeof clearTimeout === "function" ? clearTimeout : () => {
+      };
+      promise.then(
+        (value) => {
+          clear(timer);
+          resolve(value);
+        },
+        (error) => {
+          clear(timer);
+          reject(error);
+        }
+      );
+    });
+  }
+  function createHttpClient({
+    userAgent,
+    accept = HTML_ACCEPT,
+    defaultHeaders = {},
+    budgetMs = 5e4,
+    startedAt = Date.now(),
+    log
+  }) {
+    const remaining = () => budgetMs - (Date.now() - startedAt);
+    async function text(url, options = {}) {
+      if (remaining() <= 0) {
+        log.warn(`Time budget exhausted, skipping ${url}`);
+        return null;
+      }
+      const headers = Object.assign(
+        {
+          Accept: accept,
+          "Accept-Language": "en-US,en;q=0.9",
+          "User-Agent": userAgent
+        },
+        defaultHeaders,
+        options.headers || {}
+      );
+      const init = { headers, method: options.method || "GET" };
+      if (options.body !== void 0 && options.body !== null)
+        init.body = options.body;
+      try {
+        const timeout = Math.min(REQUEST_TIMEOUT_MS, Math.max(1e3, remaining()));
+        const response = await withTimeout(fetch(url, init), timeout);
+        if (!response || response.status === 0 || !response.ok) {
+          log.warn(
+            `HTTP ${response ? response.status : "no-response"} for ${url}`
+          );
+          return null;
+        }
+        return await response.text() || "";
+      } catch (error) {
+        log.warn(
+          `Request failed for ${url}: ${error?.message ? error.message : error}`
+        );
+        return null;
+      }
+    }
+    async function json(url, options = {}) {
+      const payload = await text(
+        url,
+        Object.assign({}, options, {
+          headers: Object.assign(
+            { Accept: "application/json" },
+            options.headers || {}
+          )
+        })
+      );
+      if (!payload) return null;
+      try {
+        return JSON.parse(payload);
+      } catch (_error) {
+        log.warn(`Invalid JSON from ${url}`);
+        return null;
+      }
+    }
+    return { budgetMs, json, remaining, startedAt, text };
+  }
+
+  // src/shared/log.js
+  function createLogger(tag) {
+    const prefix = `[${tag}]`;
+    function write(level, args) {
+      const target = console[level] || console.log;
+      target(prefix, ...args);
+    }
+    return {
+      debug(...args) {
+        write("log", args);
+      },
+      error(...args) {
+        write("error", args);
+      },
+      info(...args) {
+        write("info", args);
+      },
+      warn(...args) {
+        write("warn", args);
+      }
+    };
   }
 
   // src/shared/media.js
@@ -161,14 +275,14 @@ var OploverzProvider = (() => {
     if (referer) headers.Referer = ensureTrailingSlash(referer);
     if (origin) headers.Origin = origin;
     const stream = {
-      name,
-      title: streamTitle(title),
-      url,
-      quality: quality || "HD",
-      type,
+      headers,
       language,
+      name,
       provider,
-      headers
+      quality: quality || "HD",
+      title: streamTitle(title),
+      type,
+      url
     };
     if (Array.isArray(subtitles) && subtitles.length) {
       stream.subtitles = subtitles;
@@ -184,207 +298,13 @@ var OploverzProvider = (() => {
     if (!playlist) return null;
     const pattern = /RESOLUTION=\d+x(\d+)/g;
     let best = 0;
-    let match;
-    while (match = pattern.exec(playlist)) {
+    let match = pattern.exec(playlist);
+    while (match) {
       const height = Number.parseInt(match[1], 10);
       if (height > best && height <= 4320) best = height;
+      match = pattern.exec(playlist);
     }
     return best > 0 ? `${best}p` : null;
-  }
-
-  // src/oploverz/config.js
-  var OPLOVERZ = {
-    label: "Oploverz",
-    providerId: "oploverz",
-    baseUrl: "https://oploverz.ch",
-    locale: "id",
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    budgetMs: 5e4
-  };
-
-  // src/oploverz/client.js
-  function seriesSlug(seriesUrl) {
-    const match = String(seriesUrl || "").match(/\/series\/([^/?#]+)/i);
-    return match ? match[1] : "";
-  }
-  function createOploverzClient({ http, log }) {
-    const baseUrl = OPLOVERZ.baseUrl;
-    const siteReferer = `${baseUrl}/`;
-    async function search(query) {
-      const html = await http.text(`${baseUrl}/?s=${encodeURIComponent(query)}`, {
-        headers: { Referer: siteReferer }
-      });
-      if (!html) return [];
-      const $ = loadHtml(html);
-      const results = [];
-      const seen = {};
-      $("div.listupd article.bs").each(function(index, element) {
-        const item = $(element);
-        const link = item.find(".bsx a[title]").first();
-        if (!link || !link.length) return;
-        const url = absoluteUrl(link.attr("href"), baseUrl);
-        if (!url || seen[url]) return;
-        const title = cleanText(link.attr("title") || link.text());
-        if (!title) return;
-        seen[url] = true;
-        results.push({ title, url });
-      });
-      log.debug(`Search "${query}" returned ${results.length} result(s).`);
-      return results;
-    }
-    async function getEpisodes(animeUrl) {
-      const html = await http.text(animeUrl, { headers: { Referer: siteReferer } });
-      if (!html) return [];
-      const $ = loadHtml(html);
-      const entries = [];
-      const seen = {};
-      $(".eplister li").each(function(index, element) {
-        const item = $(element);
-        const link = item.find("a").first();
-        if (!link || !link.length) return;
-        const url = absoluteUrl(link.attr("href"), baseUrl);
-        if (!url || seen[url]) return;
-        const number = toPositiveInt(cleanText(item.find(".epl-num").text())) || episodeNumberFromText(link.text()) || episodeNumberFromUrl(url);
-        if (!number) return;
-        seen[url] = true;
-        entries.push({ number, url, title: cleanText(link.text()) });
-      });
-      log.debug(`${animeUrl} exposes ${entries.length} episode(s).`);
-      return entries;
-    }
-    async function getCandidates(episodeUrl) {
-      const html = await http.text(episodeUrl, { headers: { Referer: siteReferer } });
-      if (!html) return [];
-      const $ = loadHtml(html);
-      const candidates = [];
-      const seen = {};
-      function add(url, label) {
-        if (!url) return;
-        const decoded = String(url).replace(/&amp;/g, "&").trim();
-        if (!decoded || decoded.indexOf("url=none") !== -1) return;
-        const absolute = absoluteUrl(decoded, baseUrl);
-        if (!absolute || seen[absolute]) return;
-        seen[absolute] = true;
-        candidates.push({ label: cleanText(label) || "Player", url: absolute });
-      }
-      $("#pembed iframe").each(function(index, element) {
-        add($(element).attr("src"), "Player");
-      });
-      $(".dsu-server").each(function(index, element) {
-        const item = $(element);
-        const label = item.attr("data-label") || "Server";
-        add(item.attr("data-url"), label);
-        const embedded = item.attr("data-embed");
-        if (embedded) {
-          try {
-            const decoded = atob(String(embedded).replace(/\s+/g, ""));
-            const match = decoded.match(/src=["']([^"']+)/i);
-            if (match) add(match[1], label);
-          } catch (error) {
-            log.debug(`Could not decode ${label} embed.`);
-          }
-        }
-      });
-      log.debug(`${episodeUrl} exposes ${candidates.length} player(s).`);
-      return candidates;
-    }
-    return { search, getEpisodes, getCandidates };
-  }
-
-  // src/shared/http.js
-  var HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
-  var REQUEST_TIMEOUT_MS = 15e3;
-  function withTimeout(promise, ms) {
-    if (typeof setTimeout !== "function" || !(ms > 0)) return promise;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`request timed out after ${ms}ms`)), ms);
-      const clear = typeof clearTimeout === "function" ? clearTimeout : function() {
-      };
-      promise.then(
-        (value) => {
-          clear(timer);
-          resolve(value);
-        },
-        (error) => {
-          clear(timer);
-          reject(error);
-        }
-      );
-    });
-  }
-  function createHttpClient({
-    userAgent,
-    accept = HTML_ACCEPT,
-    defaultHeaders = {},
-    budgetMs = 5e4,
-    startedAt = Date.now(),
-    log
-  }) {
-    const remaining = () => budgetMs - (Date.now() - startedAt);
-    async function text(url, options = {}) {
-      if (remaining() <= 0) {
-        log.warn(`Time budget exhausted, skipping ${url}`);
-        return null;
-      }
-      const headers = Object.assign(
-        { "User-Agent": userAgent, Accept: accept, "Accept-Language": "en-US,en;q=0.9" },
-        defaultHeaders,
-        options.headers || {}
-      );
-      const init = { method: options.method || "GET", headers };
-      if (options.body !== void 0 && options.body !== null) init.body = options.body;
-      try {
-        const timeout = Math.min(REQUEST_TIMEOUT_MS, Math.max(1e3, remaining()));
-        const response = await withTimeout(fetch(url, init), timeout);
-        if (!response || response.status === 0 || !response.ok) {
-          log.warn(`HTTP ${response ? response.status : "no-response"} for ${url}`);
-          return null;
-        }
-        return await response.text() || "";
-      } catch (error) {
-        log.warn(`Request failed for ${url}: ${error && error.message ? error.message : error}`);
-        return null;
-      }
-    }
-    async function json(url, options = {}) {
-      const payload = await text(
-        url,
-        Object.assign({}, options, {
-          headers: Object.assign({ Accept: "application/json" }, options.headers || {})
-        })
-      );
-      if (!payload) return null;
-      try {
-        return JSON.parse(payload);
-      } catch (error) {
-        log.warn(`Invalid JSON from ${url}`);
-        return null;
-      }
-    }
-    return { text, json, remaining, startedAt, budgetMs };
-  }
-
-  // src/shared/log.js
-  function createLogger(tag) {
-    const prefix = `[${tag}]`;
-    function write(level, args) {
-      const target = console[level] || console.log;
-      target(prefix, ...args);
-    }
-    return {
-      debug(...args) {
-        write("log", args);
-      },
-      info(...args) {
-        write("info", args);
-      },
-      warn(...args) {
-        write("warn", args);
-      },
-      error(...args) {
-        write("error", args);
-      }
-    };
   }
 
   // src/shared/packer.js
@@ -398,21 +318,33 @@ var OploverzProvider = (() => {
       if (char === "\\") {
         const next = source.charAt(index + 1);
         if (next === "x") {
-          value += String.fromCharCode(Number.parseInt(source.substr(index + 2, 2), 16));
+          value += String.fromCharCode(
+            Number.parseInt(source.substr(index + 2, 2), 16)
+          );
           index += 4;
           continue;
         }
         if (next === "u") {
-          value += String.fromCharCode(Number.parseInt(source.substr(index + 2, 4), 16));
+          value += String.fromCharCode(
+            Number.parseInt(source.substr(index + 2, 4), 16)
+          );
           index += 6;
           continue;
         }
-        const escapes = { n: "\n", r: "\r", t: "	", b: "\b", f: "\f", v: "\v", "0": "\0" };
+        const escapes = {
+          0: "\0",
+          b: "\b",
+          f: "\f",
+          n: "\n",
+          r: "\r",
+          t: "	",
+          v: "\v"
+        };
         value += escapes[next] !== void 0 ? escapes[next] : next;
         index += 2;
         continue;
       }
-      if (char === quote) return { value, end: index + 1 };
+      if (char === quote) return { end: index + 1, value };
       value += char;
       index += 1;
     }
@@ -421,12 +353,15 @@ var OploverzProvider = (() => {
   function readInt(source, position) {
     const match = source.slice(position).match(/^\s*(\d+)/);
     if (!match) return null;
-    return { value: Number.parseInt(match[1], 10), end: position + match[0].length };
+    return {
+      end: position + match[0].length,
+      value: Number.parseInt(match[1], 10)
+    };
   }
   function replaceToken(source, token, replacement) {
     try {
       return source.replace(new RegExp(`\\b${token}\\b`, "g"), replacement);
-    } catch (error) {
+    } catch (_error) {
       return source;
     }
   }
@@ -440,15 +375,18 @@ var OploverzProvider = (() => {
     const payload = readJsString(source, position);
     if (!payload) return source;
     position = payload.end;
-    while (position < source.length && /[\s,]/.test(source.charAt(position))) position += 1;
+    while (position < source.length && /[\s,]/.test(source.charAt(position)))
+      position += 1;
     const radix = readInt(source, position);
     if (!radix) return source;
     position = radix.end;
-    while (position < source.length && /[\s,]/.test(source.charAt(position))) position += 1;
+    while (position < source.length && /[\s,]/.test(source.charAt(position)))
+      position += 1;
     const count = readInt(source, position);
     if (!count) return source;
     position = count.end;
-    while (position < source.length && /[\s,]/.test(source.charAt(position))) position += 1;
+    while (position < source.length && /[\s,]/.test(source.charAt(position)))
+      position += 1;
     const words = readJsString(source, position);
     if (!words) return source;
     const tokens = words.value.split("|");
@@ -463,21 +401,24 @@ var OploverzProvider = (() => {
   // src/shared/player.js
   var AD_HOST = /googleads|doubleclick|googletagmanager|googlesyndication|facebook|twitter|disqus|histats|analytics|adservice|popads|adsterra|propeller/i;
   function findDirectMedia(html) {
-    const match = String(html || "").match(/https?:\/\/[^"'\s\\]+\.(?:m3u8|mp4)(?:\?[^"'\s\\]*)?/i);
+    const match = String(html || "").match(
+      /https?:\/\/[^"'\s\\]+\.(?:m3u8|mp4)(?:\?[^"'\s\\]*)?/i
+    );
     return match ? match[0] : null;
   }
   function findIframe(html, baseUrl) {
     const pattern = /<iframe[^>]+src=["']([^"']+)["']/gi;
     const candidates = [];
-    let match;
-    while (match = pattern.exec(html)) {
+    for (let match = pattern.exec(html); match; match = pattern.exec(html)) {
       const url = absoluteUrl(match[1], baseUrl);
       if (!isHttpUrl(url)) continue;
       if (AD_HOST.test(url)) continue;
       if (candidates.indexOf(url) === -1) candidates.push(url);
     }
     for (const url of candidates) {
-      if (/blogger\.com|video\.g|drive\.google\.com|desustream|desudrive|mp4upload|vidhide|filemoon|streamtape/i.test(url)) {
+      if (/blogger\.com|video\.g|drive\.google\.com|desustream|desudrive|mp4upload|vidhide|filemoon|streamtape/i.test(
+        url
+      )) {
         return url;
       }
     }
@@ -485,7 +426,9 @@ var OploverzProvider = (() => {
   }
   function extractGooglevideo(html) {
     const decoded = String(html || "").replace(/\\u003d/g, "=").replace(/\\u0026/g, "&").replace(/\\u0025/g, "%").replace(/\\u002F/g, "/").replace(/\\\//g, "/").replace(/\\&quot;/g, '"').replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-    const match = decoded.match(/https?:\/\/[A-Za-z0-9.-]*googlevideo\.com\/videoplayback\?[^"'\s\\]*/i);
+    const match = decoded.match(
+      /https?:\/\/[A-Za-z0-9.-]*googlevideo\.com\/videoplayback\?[^"'\s\\]*/i
+    );
     if (!match) return null;
     const url = match[0].replace(/\\+$/, "");
     return isHttpUrl(url) ? url : null;
@@ -500,11 +443,13 @@ var OploverzProvider = (() => {
     for (let depth = 0; depth <= 3 && current; depth += 1) {
       if (visited[current]) return null;
       visited[current] = true;
-      const html = await http.text(current, { headers: { Referer: siteReferer } });
+      const html = await http.text(current, {
+        headers: { Referer: siteReferer }
+      });
       if (!html) return null;
       if (isGoogleHost(current) || html.indexOf("googlevideo.com/videoplayback") !== -1) {
         const url = extractGooglevideo(html);
-        if (url) return { url, referer: "", subtitles: [] };
+        if (url) return { referer: "", subtitles: [], url };
       }
       let direct = null;
       if (html.indexOf("eval(function(p,a,c,k,e,d)") !== -1) {
@@ -514,7 +459,7 @@ var OploverzProvider = (() => {
       if (!direct) direct = findDirectMedia(html);
       if (direct) {
         const url = absoluteUrl(direct, current);
-        return { url, referer: originOf(current), subtitles: [] };
+        return { referer: originOf(current), subtitles: [], url };
       }
       const next = findIframe(html, current);
       if (!next || next === current) {
@@ -545,16 +490,22 @@ var OploverzProvider = (() => {
     const seen = {};
     const list = Array.isArray(candidates) ? candidates : [];
     for (const candidate of list) {
-      if (!candidate || !candidate.url) continue;
+      if (!candidate?.url) continue;
       if (streams.length >= maxStreams || http.remaining() < 18e3) break;
       let resolved = null;
       try {
-        resolved = resolve ? await resolve(candidate) : await resolveEmbeddedVideo(candidate.url, { http, log, referer: siteReferer });
+        resolved = resolve ? await resolve(candidate) : await resolveEmbeddedVideo(candidate.url, {
+          http,
+          log,
+          referer: siteReferer
+        });
       } catch (error) {
-        log.debug(`Player ${candidate.url} failed: ${error && error.message ? error.message : error}`);
+        log.debug(
+          `Player ${candidate.url} failed: ${error?.message ? error.message : error}`
+        );
         continue;
       }
-      if (!resolved || !resolved.url || seen[resolved.url]) continue;
+      if (!resolved?.url || seen[resolved.url]) continue;
       seen[resolved.url] = true;
       const isHls = /\.m3u8/i.test(resolved.url);
       let quality = resolved.quality || null;
@@ -564,16 +515,16 @@ var OploverzProvider = (() => {
       if (!quality) quality = isHls ? "HD" : mp4Quality;
       streams.push(
         buildStream({
-          name,
-          provider: providerId,
-          title: title ? title(candidate) : candidate.label || name,
-          url: resolved.url,
-          quality,
-          type: isHls ? "hls" : "mp4",
           language,
-          referer: resolved.referer,
+          name,
           origin: resolved.origin || resolved.referer,
+          provider: providerId,
+          quality,
+          referer: resolved.referer,
           subtitles: resolved.subtitles,
+          title: title ? title(candidate) : candidate.label || name,
+          type: isHls ? "hls" : "mp4",
+          url: resolved.url,
           userAgent
         })
       );
@@ -615,7 +566,13 @@ var OploverzProvider = (() => {
     }
     return Math.max(0, score);
   }
-  async function findBestMatch({ titles, season, maxQueries = 4, search, log }) {
+  async function findBestMatch({
+    titles,
+    season,
+    maxQueries = 4,
+    search,
+    log
+  }) {
     const queries = [];
     const seen = {};
     for (const title of titles) {
@@ -643,7 +600,9 @@ var OploverzProvider = (() => {
       if (index >= 1 && best && best.score >= 75) break;
     }
     if (log && best) {
-      log.debug(`Matched "${best.item.title}" with score ${best.score.toFixed(2)}`);
+      log.debug(
+        `Matched "${best.item.title}" with score ${best.score.toFixed(2)}`
+      );
     }
     return best && best.score >= 55 ? best : null;
   }
@@ -665,31 +624,41 @@ var OploverzProvider = (() => {
     if (tracker) {
       return {
         kind: tracker[1].toLowerCase(),
-        value: tracker[2],
-        seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null
+        seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null,
+        value: tracker[2]
       };
     }
     const imdb = raw.match(IMDB_ID);
-    if (imdb) return { kind: "imdb", value: imdb[1], seasonSuffix: null };
+    if (imdb) return { kind: "imdb", seasonSuffix: null, value: imdb[1] };
     const numeric = raw.replace(ID_PREFIX, "");
-    if (/^\d+$/.test(numeric)) return { kind: "tmdb", value: numeric, seasonSuffix: null };
-    return { kind: "unknown", value: raw, seasonSuffix: null };
+    if (/^\d+$/.test(numeric))
+      return { kind: "tmdb", seasonSuffix: null, value: numeric };
+    return { kind: "unknown", seasonSuffix: null, value: raw };
   }
-  async function resolveTitles({ contentId, mediaType, season, http, log, locale = "en" }) {
+  async function resolveTitles({
+    contentId,
+    mediaType,
+    season,
+    http,
+    log,
+    locale = "en"
+  }) {
     const parsed = parseContentId(contentId);
     const result = {
-      titles: [],
-      seasonCounts: {},
-      name: "",
       malId: null,
-      seasonSuffix: parsed.seasonSuffix
+      name: "",
+      seasonCounts: {},
+      seasonSuffix: parsed.seasonSuffix,
+      titles: []
     };
     if (parsed.kind === "mal") {
       result.malId = parsed.value;
       return result;
     }
     if (parsed.kind !== "tmdb" && parsed.kind !== "imdb") {
-      log.warn(`Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`);
+      log.warn(
+        `Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`
+      );
       return result;
     }
     const apiKey = readTmdbKey();
@@ -704,8 +673,8 @@ var OploverzProvider = (() => {
         `${TMDB_API_BASE}/find/${encodeURIComponent(tmdbId)}?api_key=${apiKey}&external_source=imdb_id`
       );
       const list = found ? type === "movie" ? found.movie_results : found.tv_results : null;
-      const first = list && list.length ? list[0] : null;
-      if (!first || !first.id) {
+      const first = list?.length ? list[0] : null;
+      if (!first?.id) {
         log.warn(`IMDb id ${tmdbId} could not be resolved to a TMDB id.`);
         return result;
       }
@@ -791,44 +760,167 @@ var OploverzProvider = (() => {
     }
   }
 
+  // src/shared/dom.js
+  function loadHtml(html) {
+    const cheerioLib = typeof cheerio !== "undefined" && cheerio ? cheerio : globalThis.cheerio;
+    if (cheerioLib && typeof cheerioLib.load === "function")
+      return cheerioLib.load(html);
+    const runtimeRequire = typeof globalThis !== "undefined" ? globalThis.require : null;
+    if (typeof runtimeRequire === "function") {
+      const loaded = runtimeRequire("cheerio");
+      if (loaded && typeof loaded.load === "function") return loaded.load(html);
+    }
+    throw new Error("cheerio is not available in this runtime");
+  }
+
+  // src/oploverz/config.js
+  var OPLOVERZ = {
+    baseUrl: "https://oploverz.ch",
+    budgetMs: 5e4,
+    label: "Oploverz",
+    locale: "id",
+    providerId: "oploverz",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  };
+
+  // src/oploverz/client.js
+  function seriesSlug(seriesUrl) {
+    const match = String(seriesUrl || "").match(/\/series\/([^/?#]+)/i);
+    return match ? match[1] : "";
+  }
+  function createOploverzClient({ http, log }) {
+    const baseUrl = OPLOVERZ.baseUrl;
+    const siteReferer = `${baseUrl}/`;
+    async function search(query) {
+      const html = await http.text(`${baseUrl}/?s=${encodeURIComponent(query)}`, {
+        headers: { Referer: siteReferer }
+      });
+      if (!html) return [];
+      const $ = loadHtml(html);
+      const results = [];
+      const seen = {};
+      $("div.listupd article.bs").each((_index, element) => {
+        const item = $(element);
+        const link = item.find(".bsx a[title]").first();
+        if (!link?.length) return;
+        const url = absoluteUrl(link.attr("href"), baseUrl);
+        if (!url || seen[url]) return;
+        const title = cleanText(link.attr("title") || link.text());
+        if (!title) return;
+        seen[url] = true;
+        results.push({ title, url });
+      });
+      log.debug(`Search "${query}" returned ${results.length} result(s).`);
+      return results;
+    }
+    async function getEpisodes(animeUrl) {
+      const html = await http.text(animeUrl, {
+        headers: { Referer: siteReferer }
+      });
+      if (!html) return [];
+      const $ = loadHtml(html);
+      const entries = [];
+      const seen = {};
+      $(".eplister li").each((_index, element) => {
+        const item = $(element);
+        const link = item.find("a").first();
+        if (!link?.length) return;
+        const url = absoluteUrl(link.attr("href"), baseUrl);
+        if (!url || seen[url]) return;
+        const number = toPositiveInt(cleanText(item.find(".epl-num").text())) || episodeNumberFromText(link.text()) || episodeNumberFromUrl(url);
+        if (!number) return;
+        seen[url] = true;
+        entries.push({ number, title: cleanText(link.text()), url });
+      });
+      log.debug(`${animeUrl} exposes ${entries.length} episode(s).`);
+      return entries;
+    }
+    async function getCandidates(episodeUrl) {
+      const html = await http.text(episodeUrl, {
+        headers: { Referer: siteReferer }
+      });
+      if (!html) return [];
+      const $ = loadHtml(html);
+      const candidates = [];
+      const seen = {};
+      function add(url, label) {
+        if (!url) return;
+        const decoded = String(url).replace(/&amp;/g, "&").trim();
+        if (!decoded || decoded.indexOf("url=none") !== -1) return;
+        const absolute = absoluteUrl(decoded, baseUrl);
+        if (!absolute || seen[absolute]) return;
+        seen[absolute] = true;
+        candidates.push({ label: cleanText(label) || "Player", url: absolute });
+      }
+      $("#pembed iframe").each((_index, element) => {
+        add($(element).attr("src"), "Player");
+      });
+      $(".dsu-server").each((_index, element) => {
+        const item = $(element);
+        const label = item.attr("data-label") || "Server";
+        add(item.attr("data-url"), label);
+        const embedded = item.attr("data-embed");
+        if (embedded) {
+          try {
+            const decoded = atob(String(embedded).replace(/\s+/g, ""));
+            const match = decoded.match(/src=["']([^"']+)/i);
+            if (match) add(match[1], label);
+          } catch (_error) {
+            log.debug(`Could not decode ${label} embed.`);
+          }
+        }
+      });
+      log.debug(`${episodeUrl} exposes ${candidates.length} player(s).`);
+      return candidates;
+    }
+    return { getCandidates, getEpisodes, search };
+  }
+
   // src/oploverz/provider.js
   async function getStreams(contentId, mediaType, season, episode) {
     const log = createLogger(OPLOVERZ.label);
     const http = createHttpClient({
-      userAgent: OPLOVERZ.userAgent,
       budgetMs: OPLOVERZ.budgetMs,
+      log,
       startedAt: Date.now(),
-      log
+      userAgent: OPLOVERZ.userAgent
     });
     const client = createOploverzClient({ http, log });
     const type = mediaType === "movie" ? "movie" : "tv";
     const seasonNumber = toPositiveInt(season);
     const episodeNumber = toPositiveInt(episode) || 1;
-    log.info(`Request id=${contentId} type=${type} season=${seasonNumber} episode=${episodeNumber}`);
+    log.info(
+      `Request id=${contentId} type=${type} season=${seasonNumber} episode=${episodeNumber}`
+    );
     const meta = await resolveTitles({
       contentId,
-      mediaType: type,
-      season: seasonNumber,
       http,
+      locale: OPLOVERZ.locale,
       log,
-      locale: OPLOVERZ.locale
+      mediaType: type,
+      season: seasonNumber
     });
     if (!meta.titles.length) {
       log.warn("No title candidates available; cannot search the site.");
       return [];
     }
     const match = await findBestMatch({
-      titles: meta.titles,
-      season: seasonNumber,
+      log,
       search: client.search,
-      log
+      season: seasonNumber,
+      titles: meta.titles
     });
     if (!match) {
       log.warn("No matching series found on Oploverz.");
       return [];
     }
     const episodes = await client.getEpisodes(match.item.url);
-    let picked = pickEpisode(episodes, episodeNumber, seasonNumber, meta.seasonCounts);
+    let picked = pickEpisode(
+      episodes,
+      episodeNumber,
+      seasonNumber,
+      meta.seasonCounts
+    );
     if (!picked && type === "movie") picked = { number: 1, url: match.item.url };
     let episodeUrl = picked ? picked.url : "";
     const resolvedNumber = picked ? picked.number : episodeNumber;
@@ -840,7 +932,9 @@ var OploverzProvider = (() => {
       }
     }
     if (!episodeUrl) {
-      log.warn(`Episode ${episodeNumber} is not available for "${match.item.title}".`);
+      log.warn(
+        `Episode ${episodeNumber} is not available for "${match.item.title}".`
+      );
       return [];
     }
     const candidates = await client.getCandidates(episodeUrl);
@@ -852,15 +946,15 @@ var OploverzProvider = (() => {
     const label = type === "movie" ? "Movie" : `Episode ${resolvedNumber}`;
     return collectStreams(candidates, {
       http,
+      language: "id",
       log,
+      maxStreams: 2,
+      mp4Quality: "360p",
       name: OPLOVERZ.label,
       providerId: OPLOVERZ.providerId,
-      userAgent: OPLOVERZ.userAgent,
-      language: "id",
       siteReferer: `${OPLOVERZ.baseUrl}/`,
-      mp4Quality: "360p",
-      maxStreams: 2,
-      title: (candidate) => `${displayTitle} • ${label} • ${candidate.label}`
+      title: (candidate) => `${displayTitle} • ${label} • ${candidate.label}`,
+      userAgent: OPLOVERZ.userAgent
     });
   }
   return __toCommonJS(index_exports);

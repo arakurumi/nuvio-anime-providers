@@ -1,1 +1,1 @@
-export { getStreams } from './provider.js';
+export { getStreams } from "./provider.js";

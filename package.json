@@ -1,16 +1,19 @@
 {
-  "name": "nuvio-anime-providers",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "description": "Anime providers for Nuvio (HiAnime, OtakuDesu, Oploverz, Anoboy, Anichin, Gomunime, GogoAnimes)",
-  "scripts": {
-    "build": "node build.mjs",
-    "watch": "node build.mjs --watch",
-    "preview": "node tools/preview.mjs"
-  },
-  "devDependencies": {
-    "cheerio": "^1.2.0",
-    "esbuild": "^0.28.2"
-  }
+	"description": "Anime providers for Nuvio (HiAnime, OtakuDesu, Oploverz, Anoboy, Anichin, Gomunime, GogoAnimes)",
+	"devDependencies": {
+		"@biomejs/biome": "^2.6.4",
+		"cheerio": "^1.2.0",
+		"esbuild": "^0.28.2"
+	},
+	"name": "nuvio-anime-providers",
+	"private": true,
+	"scripts": {
+		"build": "node build.mjs",
+		"lint": "biome check --error-on-warnings .",
+		"lint:fix": "biome check --write .",
+		"preview": "node tools/preview.mjs",
+		"watch": "node build.mjs --watch"
+	},
+	"type": "module",
+	"version": "1.0.0"
 }

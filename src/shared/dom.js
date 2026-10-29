@@ -9,14 +9,17 @@
  * @param {string} html
  */
 export function loadHtml(html) {
-  const cheerioLib = typeof cheerio !== 'undefined' && cheerio ? cheerio : globalThis.cheerio;
-  if (cheerioLib && typeof cheerioLib.load === 'function') return cheerioLib.load(html);
+	const cheerioLib =
+		typeof cheerio !== "undefined" && cheerio ? cheerio : globalThis.cheerio;
+	if (cheerioLib && typeof cheerioLib.load === "function")
+		return cheerioLib.load(html);
 
-  const runtimeRequire = typeof globalThis !== 'undefined' ? globalThis.require : null;
-  if (typeof runtimeRequire === 'function') {
-    const loaded = runtimeRequire('cheerio');
-    if (loaded && typeof loaded.load === 'function') return loaded.load(html);
-  }
+	const runtimeRequire =
+		typeof globalThis !== "undefined" ? globalThis.require : null;
+	if (typeof runtimeRequire === "function") {
+		const loaded = runtimeRequire("cheerio");
+		if (loaded && typeof loaded.load === "function") return loaded.load(html);
+	}
 
-  throw new Error('cheerio is not available in this runtime');
+	throw new Error("cheerio is not available in this runtime");
 }

@@ -1,8 +1,8 @@
 export const OTAKUDESU = {
-  label: 'OtakuDesu',
-  providerId: 'otakudesu',
-  baseUrl: 'https://otakudesu.blog',
-  userAgent:
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  budgetMs: 50000,
+	baseUrl: "https://otakudesu.blog",
+	budgetMs: 50000,
+	label: "OtakuDesu",
+	providerId: "otakudesu",
+	userAgent:
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 };

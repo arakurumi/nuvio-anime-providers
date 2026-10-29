@@ -5,25 +5,25 @@
  * @param {string} tag
  */
 export function createLogger(tag) {
-  const prefix = `[${tag}]`;
+	const prefix = `[${tag}]`;
 
-  function write(level, args) {
-    const target = console[level] || console.log;
-    target(prefix, ...args);
-  }
+	function write(level, args) {
+		const target = console[level] || console.log;
+		target(prefix, ...args);
+	}
 
-  return {
-    debug(...args) {
-      write('log', args);
-    },
-    info(...args) {
-      write('info', args);
-    },
-    warn(...args) {
-      write('warn', args);
-    },
-    error(...args) {
-      write('error', args);
-    },
-  };
+	return {
+		debug(...args) {
+			write("log", args);
+		},
+		error(...args) {
+			write("error", args);
+		},
+		info(...args) {
+			write("info", args);
+		},
+		warn(...args) {
+			write("warn", args);
+		},
+	};
 }

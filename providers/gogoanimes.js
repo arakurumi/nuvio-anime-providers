@@ -24,68 +24,115 @@ var GogoanimesProvider = (() => {
     getStreams: () => getStreams
   });
 
-  // src/shared/dom.js
-  function loadHtml(html) {
-    const cheerioLib = typeof cheerio !== "undefined" && cheerio ? cheerio : globalThis.cheerio;
-    if (cheerioLib && typeof cheerioLib.load === "function") return cheerioLib.load(html);
-    const runtimeRequire = typeof globalThis !== "undefined" ? globalThis.require : null;
-    if (typeof runtimeRequire === "function") {
-      const loaded = runtimeRequire("cheerio");
-      if (loaded && typeof loaded.load === "function") return loaded.load(html);
+  // src/shared/http.js
+  var HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+  var REQUEST_TIMEOUT_MS = 15e3;
+  function withTimeout(promise, ms) {
+    if (typeof setTimeout !== "function" || !(ms > 0)) return promise;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`request timed out after ${ms}ms`)),
+        ms
+      );
+      const clear = typeof clearTimeout === "function" ? clearTimeout : () => {
+      };
+      promise.then(
+        (value) => {
+          clear(timer);
+          resolve(value);
+        },
+        (error) => {
+          clear(timer);
+          reject(error);
+        }
+      );
+    });
+  }
+  function createHttpClient({
+    userAgent,
+    accept = HTML_ACCEPT,
+    defaultHeaders = {},
+    budgetMs = 5e4,
+    startedAt = Date.now(),
+    log
+  }) {
+    const remaining = () => budgetMs - (Date.now() - startedAt);
+    async function text(url, options = {}) {
+      if (remaining() <= 0) {
+        log.warn(`Time budget exhausted, skipping ${url}`);
+        return null;
+      }
+      const headers = Object.assign(
+        {
+          Accept: accept,
+          "Accept-Language": "en-US,en;q=0.9",
+          "User-Agent": userAgent
+        },
+        defaultHeaders,
+        options.headers || {}
+      );
+      const init = { headers, method: options.method || "GET" };
+      if (options.body !== void 0 && options.body !== null)
+        init.body = options.body;
+      try {
+        const timeout = Math.min(REQUEST_TIMEOUT_MS, Math.max(1e3, remaining()));
+        const response = await withTimeout(fetch(url, init), timeout);
+        if (!response || response.status === 0 || !response.ok) {
+          log.warn(
+            `HTTP ${response ? response.status : "no-response"} for ${url}`
+          );
+          return null;
+        }
+        return await response.text() || "";
+      } catch (error) {
+        log.warn(
+          `Request failed for ${url}: ${error?.message ? error.message : error}`
+        );
+        return null;
+      }
     }
-    throw new Error("cheerio is not available in this runtime");
+    async function json(url, options = {}) {
+      const payload = await text(
+        url,
+        Object.assign({}, options, {
+          headers: Object.assign(
+            { Accept: "application/json" },
+            options.headers || {}
+          )
+        })
+      );
+      if (!payload) return null;
+      try {
+        return JSON.parse(payload);
+      } catch (_error) {
+        log.warn(`Invalid JSON from ${url}`);
+        return null;
+      }
+    }
+    return { budgetMs, json, remaining, startedAt, text };
   }
 
-  // src/shared/text.js
-  function decodeEntities(value) {
-    return String(value === null || value === void 0 ? "" : value).replace(/&#x([0-9a-f]+);/gi, (match, hex) => String.fromCharCode(Number.parseInt(hex, 16))).replace(/&#(\d+);/g, (match, decimal) => String.fromCharCode(Number.parseInt(decimal, 10))).replace(/&nbsp;/gi, " ").replace(/&quot;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&");
-  }
-  function cleanText(value) {
-    return decodeEntities(value).replace(/\s+/g, " ").trim();
-  }
-  function normalize(value) {
-    let text = String(value === null || value === void 0 ? "" : value).toLowerCase();
-    try {
-      text = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    } catch (error) {
+  // src/shared/log.js
+  function createLogger(tag) {
+    const prefix = `[${tag}]`;
+    function write(level, args) {
+      const target = console[level] || console.log;
+      target(prefix, ...args);
     }
-    text = text.replace(/&/g, " and ").replace(/['`\u2019]/g, "");
-    return text.replace(/[^a-z0-9]+/g, " ").trim();
-  }
-  function cleanCandidate(value) {
-    let text = String(value === null || value === void 0 ? "" : value);
-    text = text.replace(/\([^)]*episode[^)]*\)/gi, " ");
-    text = text.replace(/\([^)]*(?:sub|dub|batch|bd|bluray|movie|tv|ova|ona|special)[^)]*\)/gi, " ");
-    text = text.replace(/subtitle\s+indonesia/gi, " ");
-    text = text.replace(/\bsub\s*indo\b/gi, " ");
-    text = text.replace(/\bdub\s*indo\b/gi, " ");
-    return text.replace(/\s+/g, " ").trim();
-  }
-  function canonicalSeason(value) {
-    let text = String(value === null || value === void 0 ? "" : value);
-    text = text.replace(/\b(\d+)(?:st|nd|rd|th)\s+season\b/g, "season $1");
-    text = text.replace(/\bs(\d+)\b/g, "season $1");
-    return text;
-  }
-  function ordinal(value) {
-    const mod100 = value % 100;
-    if (mod100 >= 11 && mod100 <= 13) return `${value}th`;
-    if (value % 10 === 1) return `${value}st`;
-    if (value % 10 === 2) return `${value}nd`;
-    if (value % 10 === 3) return `${value}rd`;
-    return `${value}th`;
-  }
-  function toPositiveInt(value) {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  }
-
-  // src/shared/episodes.js
-  function episodeNumberFromUrl(value) {
-    const match = String(value === null || value === void 0 ? "" : value).match(
-      /(?:episode|ep)[-_/]?0*(\d+)/i
-    );
-    return match ? toPositiveInt(match[1]) : null;
+    return {
+      debug(...args) {
+        write("log", args);
+      },
+      error(...args) {
+        write("error", args);
+      },
+      info(...args) {
+        write("info", args);
+      },
+      warn(...args) {
+        write("warn", args);
+      }
+    };
   }
 
   // src/shared/media.js
@@ -128,14 +175,14 @@ var GogoanimesProvider = (() => {
     if (referer) headers.Referer = ensureTrailingSlash(referer);
     if (origin) headers.Origin = origin;
     const stream = {
-      name,
-      title: streamTitle(title),
-      url,
-      quality: quality || "HD",
-      type,
+      headers,
       language,
+      name,
       provider,
-      headers
+      quality: quality || "HD",
+      title: streamTitle(title),
+      type,
+      url
     };
     if (Array.isArray(subtitles) && subtitles.length) {
       stream.subtitles = subtitles;
@@ -151,522 +198,13 @@ var GogoanimesProvider = (() => {
     if (!playlist) return null;
     const pattern = /RESOLUTION=\d+x(\d+)/g;
     let best = 0;
-    let match;
-    while (match = pattern.exec(playlist)) {
+    let match = pattern.exec(playlist);
+    while (match) {
       const height = Number.parseInt(match[1], 10);
       if (height > best && height <= 4320) best = height;
+      match = pattern.exec(playlist);
     }
     return best > 0 ? `${best}p` : null;
-  }
-
-  // src/gogoanimes/config.js
-  var GOGOANIMES = {
-    label: "GogoAnimes",
-    providerId: "gogoanimes",
-    baseUrl: "https://gogoanimes.cv",
-    locale: "en",
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    budgetMs: 5e4
-  };
-
-  // src/gogoanimes/client.js
-  function createGogoanimesClient({ http, log }) {
-    const baseUrl = GOGOANIMES.baseUrl;
-    const siteReferer = `${baseUrl}/`;
-    async function search(query) {
-      const html = await http.text(`${baseUrl}/?s=${encodeURIComponent(query)}`, {
-        headers: { Referer: siteReferer }
-      });
-      if (!html) return [];
-      const $ = loadHtml(html);
-      const results = [];
-      const seen = {};
-      $("div.last_episodes ul.items li").each(function(index, element) {
-        const item = $(element);
-        const link = item.find("p.name a").first();
-        if (!link || !link.length) return;
-        const href = link.attr("href") || "";
-        if (href.indexOf("/anime/") === -1) return;
-        const url = absoluteUrl(href, baseUrl);
-        if (!url || seen[url]) return;
-        const title = cleanText(link.attr("title") || link.text());
-        if (!title) return;
-        seen[url] = true;
-        results.push({ title, url });
-      });
-      log.debug(`Search "${query}" returned ${results.length} result(s).`);
-      return results;
-    }
-    async function getEpisode(animeUrl, episode) {
-      const html = await http.text(animeUrl, { headers: { Referer: siteReferer } });
-      if (!html) return null;
-      const $ = loadHtml(html);
-      const ranges = [];
-      $("#episode_page a").each(function(index, element) {
-        const item = $(element);
-        const start = Number.parseInt(item.attr("data-range-start"), 10);
-        const end = Number.parseInt(item.attr("data-range-end"), 10);
-        const seriId = cleanText(item.attr("data-seri"));
-        if (Number.isFinite(start) && Number.isFinite(end) && seriId) {
-          ranges.push({ start, end, seriId });
-        }
-      });
-      const nonceMatch = html.match(/nonce\s*:\s*['"]([a-zA-Z0-9]+)['"]/);
-      const nonce = nonceMatch ? nonceMatch[1] : "";
-      const range = ranges.find((item) => episode >= item.start && episode <= item.end) || ranges[0];
-      if (range && nonce) {
-        const body = `action=load_episode_range&range_start=${encodeURIComponent(range.start)}&range_end=${encodeURIComponent(range.end)}&seri_id=${encodeURIComponent(range.seriId)}&nonce=${encodeURIComponent(nonce)}`;
-        const data = await http.json(`${baseUrl}/wp-admin/admin-ajax.php`, {
-          method: "POST",
-          body,
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "X-Requested-With": "XMLHttpRequest",
-            Referer: animeUrl
-          }
-        });
-        const payload = data && data.success && typeof data.data === "string" ? data.data : "";
-        if (payload) {
-          const $$ = loadHtml(payload);
-          let found = null;
-          $$("a[href]").each(function(index, element) {
-            if (found) return;
-            const url = absoluteUrl($$(element).attr("href"), baseUrl);
-            if (!url) return;
-            const number = episodeNumberFromUrl(url);
-            if (number === episode) found = { number, url };
-          });
-          if (found) {
-            log.debug(`AJAX episode list resolved episode ${episode}.`);
-            return found;
-          }
-        }
-      }
-      const slugMatch = String(animeUrl).match(/\/anime\/([^/?#]+)/i);
-      const slug = slugMatch ? slugMatch[1] : "";
-      if (!slug) return null;
-      log.debug(`Falling back to the constructed episode url for episode ${episode}.`);
-      return { number: episode, url: `${baseUrl}/${slug}-episode-${episode}/` };
-    }
-    async function getCandidates(episodeUrl) {
-      const html = await http.text(episodeUrl, { headers: { Referer: siteReferer } });
-      if (!html) return [];
-      const $ = loadHtml(html);
-      const candidates = [];
-      const seen = {};
-      function add(url, label) {
-        if (!url) return;
-        const decoded = String(url).replace(/&amp;/g, "&").trim();
-        if (!decoded) return;
-        const absolute = absoluteUrl(decoded, baseUrl);
-        if (!absolute || seen[absolute]) return;
-        seen[absolute] = true;
-        candidates.push({ label: cleanText(label) || "Server", url: absolute });
-      }
-      $(".anime_muti_link a").each(function(index, element) {
-        const item = $(element);
-        const video = item.attr("data-video");
-        if (!video) return;
-        const match = String(video).match(/src=["']([^"']+)/i);
-        const label = cleanText(item.text()).replace(/choose this server/i, "");
-        add(match ? match[1] : video, label);
-      });
-      $("#pembed iframe").each(function(index, element) {
-        add($(element).attr("src"), "Player");
-      });
-      log.debug(`${episodeUrl} exposes ${candidates.length} player(s).`);
-      return candidates;
-    }
-    return { search, getEpisode, getCandidates };
-  }
-
-  // src/shared/aes.js
-  var SBOX = new Uint8Array(256);
-  var INV_SBOX = new Uint8Array(256);
-  function xtime(value) {
-    return (value << 1 ^ (value & 128 ? 27 : 0)) & 255;
-  }
-  function multiply(a, b) {
-    let product = 0;
-    let left = a;
-    let right = b;
-    for (let index = 0; index < 8; index += 1) {
-      if (right & 1) product ^= left;
-      const high = left & 128;
-      left = left << 1 & 255;
-      if (high) left ^= 27;
-      right >>= 1;
-    }
-    return product;
-  }
-  function inverse(value) {
-    if (!value) return 0;
-    for (let candidate = 1; candidate < 256; candidate += 1) {
-      if (multiply(value, candidate) === 1) return candidate;
-    }
-    return 0;
-  }
-  function rotateLeft(value, shift) {
-    return (value << shift | value >> 8 - shift) & 255;
-  }
-  (function buildTables() {
-    for (let value = 0; value < 256; value += 1) {
-      const inv = inverse(value);
-      const substituted = (inv ^ rotateLeft(inv, 1) ^ rotateLeft(inv, 2) ^ rotateLeft(inv, 3) ^ rotateLeft(inv, 4) ^ 99) & 255;
-      SBOX[value] = substituted;
-      INV_SBOX[substituted] = value;
-    }
-  })();
-  function expandKey(key) {
-    const keyBytes = key.length;
-    const rounds = keyBytes / 4 + 6;
-    const expanded = new Uint8Array(16 * (rounds + 1));
-    expanded.set(key);
-    let generated = keyBytes;
-    let rcon = 1;
-    const temp = new Uint8Array(4);
-    while (generated < expanded.length) {
-      for (let index = 0; index < 4; index += 1) temp[index] = expanded[generated - 4 + index];
-      if (generated % keyBytes === 0) {
-        const first = temp[0];
-        temp[0] = temp[1];
-        temp[1] = temp[2];
-        temp[2] = temp[3];
-        temp[3] = first;
-        for (let index = 0; index < 4; index += 1) temp[index] = SBOX[temp[index]];
-        temp[0] ^= rcon;
-        rcon = xtime(rcon);
-      } else if (keyBytes > 24 && generated % keyBytes === 16) {
-        for (let index = 0; index < 4; index += 1) temp[index] = SBOX[temp[index]];
-      }
-      for (let index = 0; index < 4; index += 1) {
-        expanded[generated] = expanded[generated - keyBytes] ^ temp[index];
-        generated += 1;
-      }
-    }
-    return { expanded, rounds };
-  }
-  function addRoundKey(state, expanded, round) {
-    const offset = round * 16;
-    for (let index = 0; index < 16; index += 1) state[index] ^= expanded[offset + index];
-  }
-  function invSubBytes(state) {
-    for (let index = 0; index < 16; index += 1) state[index] = INV_SBOX[state[index]];
-  }
-  function invShiftRows(state) {
-    for (let row = 1; row < 4; row += 1) {
-      const values = [state[row], state[row + 4], state[row + 8], state[row + 12]];
-      for (let column = 0; column < 4; column += 1) {
-        state[row + 4 * ((column + row) % 4)] = values[column];
-      }
-    }
-  }
-  function invMixColumns(state) {
-    for (let column = 0; column < 4; column += 1) {
-      const offset = column * 4;
-      const a0 = state[offset];
-      const a1 = state[offset + 1];
-      const a2 = state[offset + 2];
-      const a3 = state[offset + 3];
-      state[offset] = multiply(a0, 14) ^ multiply(a1, 11) ^ multiply(a2, 13) ^ multiply(a3, 9);
-      state[offset + 1] = multiply(a0, 9) ^ multiply(a1, 14) ^ multiply(a2, 11) ^ multiply(a3, 13);
-      state[offset + 2] = multiply(a0, 13) ^ multiply(a1, 9) ^ multiply(a2, 14) ^ multiply(a3, 11);
-      state[offset + 3] = multiply(a0, 11) ^ multiply(a1, 13) ^ multiply(a2, 9) ^ multiply(a3, 14);
-    }
-  }
-  function decryptBlock(block, expanded, rounds) {
-    const state = new Uint8Array(block);
-    addRoundKey(state, expanded, rounds);
-    for (let round = rounds - 1; round >= 1; round -= 1) {
-      invShiftRows(state);
-      invSubBytes(state);
-      addRoundKey(state, expanded, round);
-      invMixColumns(state);
-    }
-    invShiftRows(state);
-    invSubBytes(state);
-    addRoundKey(state, expanded, 0);
-    return state;
-  }
-  function stripPadding(bytes) {
-    if (!bytes.length) return bytes;
-    const padding = bytes[bytes.length - 1];
-    if (padding < 1 || padding > 16 || padding > bytes.length) return bytes;
-    for (let index = bytes.length - padding; index < bytes.length; index += 1) {
-      if (bytes[index] !== padding) return bytes;
-    }
-    return bytes.subarray(0, bytes.length - padding);
-  }
-  function aesCbcDecrypt(cipher, key, iv) {
-    if (!cipher || !cipher.length || cipher.length % 16 !== 0) {
-      throw new Error("AES-CBC ciphertext length must be a multiple of 16");
-    }
-    if (!key || key.length !== 16 && key.length !== 24 && key.length !== 32) {
-      throw new Error("AES key must be 16, 24 or 32 bytes");
-    }
-    if (!iv || iv.length !== 16) throw new Error("AES-CBC needs a 16 byte IV");
-    const { expanded, rounds } = expandKey(key);
-    const output = new Uint8Array(cipher.length);
-    let previous = iv;
-    for (let offset = 0; offset < cipher.length; offset += 16) {
-      const block = cipher.subarray(offset, offset + 16);
-      const decrypted = decryptBlock(block, expanded, rounds);
-      for (let index = 0; index < 16; index += 1) {
-        output[offset + index] = decrypted[index] ^ previous[index];
-      }
-      previous = block;
-    }
-    return stripPadding(output);
-  }
-  function decodeBase64(value) {
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const input = String(value || "").replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/=]/g, "");
-    const output = [];
-    let buffer = 0;
-    let bits = 0;
-    for (let index = 0; index < input.length; index += 1) {
-      const character = input.charAt(index);
-      if (character === "=") break;
-      const valueAtIndex = alphabet.indexOf(character);
-      if (valueAtIndex === -1) continue;
-      buffer = buffer << 6 | valueAtIndex;
-      bits += 6;
-      if (bits >= 8) {
-        bits -= 8;
-        output.push(buffer >> bits & 255);
-      }
-    }
-    return new Uint8Array(output);
-  }
-  function padBytes(text, size) {
-    const output = new Uint8Array(size);
-    const source = utf8Encode(String(text));
-    output.set(source.subarray(0, Math.min(size, source.length)));
-    return output;
-  }
-  function utf8Encode(text) {
-    const bytes = [];
-    for (let index = 0; index < text.length; index += 1) {
-      let code = text.charCodeAt(index);
-      if (code >= 55296 && code <= 56319 && index + 1 < text.length) {
-        const low = text.charCodeAt(index + 1);
-        if (low >= 56320 && low <= 57343) {
-          code = 65536 + (code - 55296 << 10) + (low - 56320);
-          index += 1;
-        }
-      }
-      if (code < 128) {
-        bytes.push(code);
-      } else if (code < 2048) {
-        bytes.push(192 | code >> 6, 128 | code & 63);
-      } else if (code < 65536) {
-        bytes.push(224 | code >> 12, 128 | code >> 6 & 63, 128 | code & 63);
-      } else {
-        bytes.push(
-          240 | code >> 18,
-          128 | code >> 12 & 63,
-          128 | code >> 6 & 63,
-          128 | code & 63
-        );
-      }
-    }
-    return new Uint8Array(bytes);
-  }
-  function utf8Decode(bytes) {
-    let output = "";
-    let index = 0;
-    while (index < bytes.length) {
-      const first = bytes[index];
-      index += 1;
-      if (first < 128) {
-        output += String.fromCharCode(first);
-      } else if (first >= 192 && first < 224) {
-        output += String.fromCharCode((first & 31) << 6 | bytes[index] & 63);
-        index += 1;
-      } else if (first >= 224 && first < 240) {
-        output += String.fromCharCode(
-          (first & 15) << 12 | (bytes[index] & 63) << 6 | bytes[index + 1] & 63
-        );
-        index += 2;
-      } else if (first >= 240) {
-        let codePoint = (first & 7) << 18 | (bytes[index] & 63) << 12 | (bytes[index + 1] & 63) << 6 | bytes[index + 2] & 63;
-        index += 3;
-        codePoint -= 65536;
-        output += String.fromCharCode(55296 + (codePoint >> 10), 56320 + (codePoint & 1023));
-      } else {
-        output += String.fromCharCode(first);
-      }
-    }
-    return output;
-  }
-
-  // src/gogoanimes/player.js
-  var MEGA_ORIGIN = "https://megaplay.buzz";
-  var MEGA_KEY = "i?LMTAx0Q6,:}50U";
-  var MEGA_IV = "W0;27ToaUpl_P%'c";
-  async function resolveMegaplay(embedUrl, { http, log }) {
-    const siteReferer = `${GOGOANIMES.baseUrl}/`;
-    let page = await http.text(embedUrl, { headers: { Referer: siteReferer } });
-    if (!page) return null;
-    let megaUrl = embedUrl;
-    if (!/megaplay\.buzz/i.test(megaUrl)) {
-      const iframe = page.match(/<iframe[^>]+src=["']([^"']*megaplay[^"']*)["']/i);
-      const direct = page.match(/https?:\/\/[^"'\s]+megaplay\.buzz\/stream\/[^"'\s]+/i);
-      const target = iframe ? iframe[1] : direct ? direct[0] : "";
-      if (!target) {
-        log.warn(`No MegaPlay player found at ${embedUrl}`);
-        return null;
-      }
-      megaUrl = absoluteUrl(target.replace(/&amp;/g, "&"), embedUrl);
-      page = await http.text(megaUrl, { headers: { Referer: embedUrl } });
-      if (!page) return null;
-    }
-    const idMatch = page.match(/data-mediaid=["'](\d+)["']/i);
-    const mediaId = idMatch ? idMatch[1] : "";
-    if (!mediaId) {
-      log.warn("MegaPlay page has no media id.");
-      return null;
-    }
-    const data = await http.json(
-      `${MEGA_ORIGIN}/stream/getSources?id=${encodeURIComponent(mediaId)}`,
-      {
-        headers: {
-          Referer: megaUrl,
-          "X-Requested-With": "XMLHttpRequest",
-          Accept: "application/json"
-        }
-      }
-    );
-    if (!data || !data.enc) {
-      log.warn(`MegaPlay sources are unavailable for ${mediaId}.`);
-      return null;
-    }
-    let payload = null;
-    try {
-      const decrypted = aesCbcDecrypt(
-        decodeBase64(data.enc),
-        padBytes(MEGA_KEY, 32),
-        padBytes(MEGA_IV, 16)
-      );
-      payload = JSON.parse(utf8Decode(decrypted));
-    } catch (error) {
-      log.warn(`MegaPlay payload could not be decrypted: ${error && error.message ? error.message : error}`);
-      return null;
-    }
-    const firstSource = payload && Array.isArray(payload.sources) && payload.sources.length ? payload.sources[0] : null;
-    const file = payload && payload.file || firstSource && (firstSource.file || firstSource.url) || "";
-    if (!file) {
-      log.warn("MegaPlay payload has no stream url.");
-      return null;
-    }
-    const subtitles = (Array.isArray(data.tracks) ? data.tracks : []).filter((track) => track && track.kind === "captions" && track.file).map((track) => ({
-      url: track.file,
-      language: "en",
-      name: track.label || "English",
-      headers: { "User-Agent": GOGOANIMES.userAgent, Referer: `${MEGA_ORIGIN}/` }
-    }));
-    return {
-      url: file,
-      referer: MEGA_ORIGIN,
-      origin: MEGA_ORIGIN,
-      subtitles
-    };
-  }
-
-  // src/shared/http.js
-  var HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
-  var REQUEST_TIMEOUT_MS = 15e3;
-  function withTimeout(promise, ms) {
-    if (typeof setTimeout !== "function" || !(ms > 0)) return promise;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`request timed out after ${ms}ms`)), ms);
-      const clear = typeof clearTimeout === "function" ? clearTimeout : function() {
-      };
-      promise.then(
-        (value) => {
-          clear(timer);
-          resolve(value);
-        },
-        (error) => {
-          clear(timer);
-          reject(error);
-        }
-      );
-    });
-  }
-  function createHttpClient({
-    userAgent,
-    accept = HTML_ACCEPT,
-    defaultHeaders = {},
-    budgetMs = 5e4,
-    startedAt = Date.now(),
-    log
-  }) {
-    const remaining = () => budgetMs - (Date.now() - startedAt);
-    async function text(url, options = {}) {
-      if (remaining() <= 0) {
-        log.warn(`Time budget exhausted, skipping ${url}`);
-        return null;
-      }
-      const headers = Object.assign(
-        { "User-Agent": userAgent, Accept: accept, "Accept-Language": "en-US,en;q=0.9" },
-        defaultHeaders,
-        options.headers || {}
-      );
-      const init = { method: options.method || "GET", headers };
-      if (options.body !== void 0 && options.body !== null) init.body = options.body;
-      try {
-        const timeout = Math.min(REQUEST_TIMEOUT_MS, Math.max(1e3, remaining()));
-        const response = await withTimeout(fetch(url, init), timeout);
-        if (!response || response.status === 0 || !response.ok) {
-          log.warn(`HTTP ${response ? response.status : "no-response"} for ${url}`);
-          return null;
-        }
-        return await response.text() || "";
-      } catch (error) {
-        log.warn(`Request failed for ${url}: ${error && error.message ? error.message : error}`);
-        return null;
-      }
-    }
-    async function json(url, options = {}) {
-      const payload = await text(
-        url,
-        Object.assign({}, options, {
-          headers: Object.assign({ Accept: "application/json" }, options.headers || {})
-        })
-      );
-      if (!payload) return null;
-      try {
-        return JSON.parse(payload);
-      } catch (error) {
-        log.warn(`Invalid JSON from ${url}`);
-        return null;
-      }
-    }
-    return { text, json, remaining, startedAt, budgetMs };
-  }
-
-  // src/shared/log.js
-  function createLogger(tag) {
-    const prefix = `[${tag}]`;
-    function write(level, args) {
-      const target = console[level] || console.log;
-      target(prefix, ...args);
-    }
-    return {
-      debug(...args) {
-        write("log", args);
-      },
-      info(...args) {
-        write("info", args);
-      },
-      warn(...args) {
-        write("warn", args);
-      },
-      error(...args) {
-        write("error", args);
-      }
-    };
   }
 
   // src/shared/packer.js
@@ -680,21 +218,33 @@ var GogoanimesProvider = (() => {
       if (char === "\\") {
         const next = source.charAt(index + 1);
         if (next === "x") {
-          value += String.fromCharCode(Number.parseInt(source.substr(index + 2, 2), 16));
+          value += String.fromCharCode(
+            Number.parseInt(source.substr(index + 2, 2), 16)
+          );
           index += 4;
           continue;
         }
         if (next === "u") {
-          value += String.fromCharCode(Number.parseInt(source.substr(index + 2, 4), 16));
+          value += String.fromCharCode(
+            Number.parseInt(source.substr(index + 2, 4), 16)
+          );
           index += 6;
           continue;
         }
-        const escapes = { n: "\n", r: "\r", t: "	", b: "\b", f: "\f", v: "\v", "0": "\0" };
+        const escapes = {
+          0: "\0",
+          b: "\b",
+          f: "\f",
+          n: "\n",
+          r: "\r",
+          t: "	",
+          v: "\v"
+        };
         value += escapes[next] !== void 0 ? escapes[next] : next;
         index += 2;
         continue;
       }
-      if (char === quote) return { value, end: index + 1 };
+      if (char === quote) return { end: index + 1, value };
       value += char;
       index += 1;
     }
@@ -703,12 +253,15 @@ var GogoanimesProvider = (() => {
   function readInt(source, position) {
     const match = source.slice(position).match(/^\s*(\d+)/);
     if (!match) return null;
-    return { value: Number.parseInt(match[1], 10), end: position + match[0].length };
+    return {
+      end: position + match[0].length,
+      value: Number.parseInt(match[1], 10)
+    };
   }
   function replaceToken(source, token, replacement) {
     try {
       return source.replace(new RegExp(`\\b${token}\\b`, "g"), replacement);
-    } catch (error) {
+    } catch (_error) {
       return source;
     }
   }
@@ -722,15 +275,18 @@ var GogoanimesProvider = (() => {
     const payload = readJsString(source, position);
     if (!payload) return source;
     position = payload.end;
-    while (position < source.length && /[\s,]/.test(source.charAt(position))) position += 1;
+    while (position < source.length && /[\s,]/.test(source.charAt(position)))
+      position += 1;
     const radix = readInt(source, position);
     if (!radix) return source;
     position = radix.end;
-    while (position < source.length && /[\s,]/.test(source.charAt(position))) position += 1;
+    while (position < source.length && /[\s,]/.test(source.charAt(position)))
+      position += 1;
     const count = readInt(source, position);
     if (!count) return source;
     position = count.end;
-    while (position < source.length && /[\s,]/.test(source.charAt(position))) position += 1;
+    while (position < source.length && /[\s,]/.test(source.charAt(position)))
+      position += 1;
     const words = readJsString(source, position);
     if (!words) return source;
     const tokens = words.value.split("|");
@@ -745,21 +301,24 @@ var GogoanimesProvider = (() => {
   // src/shared/player.js
   var AD_HOST = /googleads|doubleclick|googletagmanager|googlesyndication|facebook|twitter|disqus|histats|analytics|adservice|popads|adsterra|propeller/i;
   function findDirectMedia(html) {
-    const match = String(html || "").match(/https?:\/\/[^"'\s\\]+\.(?:m3u8|mp4)(?:\?[^"'\s\\]*)?/i);
+    const match = String(html || "").match(
+      /https?:\/\/[^"'\s\\]+\.(?:m3u8|mp4)(?:\?[^"'\s\\]*)?/i
+    );
     return match ? match[0] : null;
   }
   function findIframe(html, baseUrl) {
     const pattern = /<iframe[^>]+src=["']([^"']+)["']/gi;
     const candidates = [];
-    let match;
-    while (match = pattern.exec(html)) {
+    for (let match = pattern.exec(html); match; match = pattern.exec(html)) {
       const url = absoluteUrl(match[1], baseUrl);
       if (!isHttpUrl(url)) continue;
       if (AD_HOST.test(url)) continue;
       if (candidates.indexOf(url) === -1) candidates.push(url);
     }
     for (const url of candidates) {
-      if (/blogger\.com|video\.g|drive\.google\.com|desustream|desudrive|mp4upload|vidhide|filemoon|streamtape/i.test(url)) {
+      if (/blogger\.com|video\.g|drive\.google\.com|desustream|desudrive|mp4upload|vidhide|filemoon|streamtape/i.test(
+        url
+      )) {
         return url;
       }
     }
@@ -767,7 +326,9 @@ var GogoanimesProvider = (() => {
   }
   function extractGooglevideo(html) {
     const decoded = String(html || "").replace(/\\u003d/g, "=").replace(/\\u0026/g, "&").replace(/\\u0025/g, "%").replace(/\\u002F/g, "/").replace(/\\\//g, "/").replace(/\\&quot;/g, '"').replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-    const match = decoded.match(/https?:\/\/[A-Za-z0-9.-]*googlevideo\.com\/videoplayback\?[^"'\s\\]*/i);
+    const match = decoded.match(
+      /https?:\/\/[A-Za-z0-9.-]*googlevideo\.com\/videoplayback\?[^"'\s\\]*/i
+    );
     if (!match) return null;
     const url = match[0].replace(/\\+$/, "");
     return isHttpUrl(url) ? url : null;
@@ -782,11 +343,13 @@ var GogoanimesProvider = (() => {
     for (let depth = 0; depth <= 3 && current; depth += 1) {
       if (visited[current]) return null;
       visited[current] = true;
-      const html = await http.text(current, { headers: { Referer: siteReferer } });
+      const html = await http.text(current, {
+        headers: { Referer: siteReferer }
+      });
       if (!html) return null;
       if (isGoogleHost(current) || html.indexOf("googlevideo.com/videoplayback") !== -1) {
         const url = extractGooglevideo(html);
-        if (url) return { url, referer: "", subtitles: [] };
+        if (url) return { referer: "", subtitles: [], url };
       }
       let direct = null;
       if (html.indexOf("eval(function(p,a,c,k,e,d)") !== -1) {
@@ -796,7 +359,7 @@ var GogoanimesProvider = (() => {
       if (!direct) direct = findDirectMedia(html);
       if (direct) {
         const url = absoluteUrl(direct, current);
-        return { url, referer: originOf(current), subtitles: [] };
+        return { referer: originOf(current), subtitles: [], url };
       }
       const next = findIframe(html, current);
       if (!next || next === current) {
@@ -827,16 +390,22 @@ var GogoanimesProvider = (() => {
     const seen = {};
     const list = Array.isArray(candidates) ? candidates : [];
     for (const candidate of list) {
-      if (!candidate || !candidate.url) continue;
+      if (!candidate?.url) continue;
       if (streams.length >= maxStreams || http.remaining() < 18e3) break;
       let resolved = null;
       try {
-        resolved = resolve ? await resolve(candidate) : await resolveEmbeddedVideo(candidate.url, { http, log, referer: siteReferer });
+        resolved = resolve ? await resolve(candidate) : await resolveEmbeddedVideo(candidate.url, {
+          http,
+          log,
+          referer: siteReferer
+        });
       } catch (error) {
-        log.debug(`Player ${candidate.url} failed: ${error && error.message ? error.message : error}`);
+        log.debug(
+          `Player ${candidate.url} failed: ${error?.message ? error.message : error}`
+        );
         continue;
       }
-      if (!resolved || !resolved.url || seen[resolved.url]) continue;
+      if (!resolved?.url || seen[resolved.url]) continue;
       seen[resolved.url] = true;
       const isHls = /\.m3u8/i.test(resolved.url);
       let quality = resolved.quality || null;
@@ -846,22 +415,77 @@ var GogoanimesProvider = (() => {
       if (!quality) quality = isHls ? "HD" : mp4Quality;
       streams.push(
         buildStream({
-          name,
-          provider: providerId,
-          title: title ? title(candidate) : candidate.label || name,
-          url: resolved.url,
-          quality,
-          type: isHls ? "hls" : "mp4",
           language,
-          referer: resolved.referer,
+          name,
           origin: resolved.origin || resolved.referer,
+          provider: providerId,
+          quality,
+          referer: resolved.referer,
           subtitles: resolved.subtitles,
+          title: title ? title(candidate) : candidate.label || name,
+          type: isHls ? "hls" : "mp4",
+          url: resolved.url,
           userAgent
         })
       );
     }
     log.debug(`Resolved ${streams.length} stream(s).`);
     return streams;
+  }
+
+  // src/shared/text.js
+  function decodeEntities(value) {
+    return String(value === null || value === void 0 ? "" : value).replace(
+      /&#x([0-9a-f]+);/gi,
+      (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16))
+    ).replace(
+      /&#(\d+);/g,
+      (_match, decimal) => String.fromCharCode(Number.parseInt(decimal, 10))
+    ).replace(/&nbsp;/gi, " ").replace(/&quot;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&");
+  }
+  function cleanText(value) {
+    return decodeEntities(value).replace(/\s+/g, " ").trim();
+  }
+  function normalize(value) {
+    let text = String(
+      value === null || value === void 0 ? "" : value
+    ).toLowerCase();
+    try {
+      text = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    } catch (_error) {
+    }
+    text = text.replace(/&/g, " and ").replace(/['`\u2019]/g, "");
+    return text.replace(/[^a-z0-9]+/g, " ").trim();
+  }
+  function cleanCandidate(value) {
+    let text = String(value === null || value === void 0 ? "" : value);
+    text = text.replace(/\([^)]*episode[^)]*\)/gi, " ");
+    text = text.replace(
+      /\([^)]*(?:sub|dub|batch|bd|bluray|movie|tv|ova|ona|special)[^)]*\)/gi,
+      " "
+    );
+    text = text.replace(/subtitle\s+indonesia/gi, " ");
+    text = text.replace(/\bsub\s*indo\b/gi, " ");
+    text = text.replace(/\bdub\s*indo\b/gi, " ");
+    return text.replace(/\s+/g, " ").trim();
+  }
+  function canonicalSeason(value) {
+    let text = String(value === null || value === void 0 ? "" : value);
+    text = text.replace(/\b(\d+)(?:st|nd|rd|th)\s+season\b/g, "season $1");
+    text = text.replace(/\bs(\d+)\b/g, "season $1");
+    return text;
+  }
+  function ordinal(value) {
+    const mod100 = value % 100;
+    if (mod100 >= 11 && mod100 <= 13) return `${value}th`;
+    if (value % 10 === 1) return `${value}st`;
+    if (value % 10 === 2) return `${value}nd`;
+    if (value % 10 === 3) return `${value}rd`;
+    return `${value}th`;
+  }
+  function toPositiveInt(value) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
   // src/shared/selection.js
@@ -897,7 +521,13 @@ var GogoanimesProvider = (() => {
     }
     return Math.max(0, score);
   }
-  async function findBestMatch({ titles, season, maxQueries = 4, search, log }) {
+  async function findBestMatch({
+    titles,
+    season,
+    maxQueries = 4,
+    search,
+    log
+  }) {
     const queries = [];
     const seen = {};
     for (const title of titles) {
@@ -925,7 +555,9 @@ var GogoanimesProvider = (() => {
       if (index >= 1 && best && best.score >= 75) break;
     }
     if (log && best) {
-      log.debug(`Matched "${best.item.title}" with score ${best.score.toFixed(2)}`);
+      log.debug(
+        `Matched "${best.item.title}" with score ${best.score.toFixed(2)}`
+      );
     }
     return best && best.score >= 55 ? best : null;
   }
@@ -947,31 +579,41 @@ var GogoanimesProvider = (() => {
     if (tracker) {
       return {
         kind: tracker[1].toLowerCase(),
-        value: tracker[2],
-        seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null
+        seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null,
+        value: tracker[2]
       };
     }
     const imdb = raw.match(IMDB_ID);
-    if (imdb) return { kind: "imdb", value: imdb[1], seasonSuffix: null };
+    if (imdb) return { kind: "imdb", seasonSuffix: null, value: imdb[1] };
     const numeric = raw.replace(ID_PREFIX, "");
-    if (/^\d+$/.test(numeric)) return { kind: "tmdb", value: numeric, seasonSuffix: null };
-    return { kind: "unknown", value: raw, seasonSuffix: null };
+    if (/^\d+$/.test(numeric))
+      return { kind: "tmdb", seasonSuffix: null, value: numeric };
+    return { kind: "unknown", seasonSuffix: null, value: raw };
   }
-  async function resolveTitles({ contentId, mediaType, season, http, log, locale = "en" }) {
+  async function resolveTitles({
+    contentId,
+    mediaType,
+    season,
+    http,
+    log,
+    locale = "en"
+  }) {
     const parsed = parseContentId(contentId);
     const result = {
-      titles: [],
-      seasonCounts: {},
-      name: "",
       malId: null,
-      seasonSuffix: parsed.seasonSuffix
+      name: "",
+      seasonCounts: {},
+      seasonSuffix: parsed.seasonSuffix,
+      titles: []
     };
     if (parsed.kind === "mal") {
       result.malId = parsed.value;
       return result;
     }
     if (parsed.kind !== "tmdb" && parsed.kind !== "imdb") {
-      log.warn(`Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`);
+      log.warn(
+        `Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`
+      );
       return result;
     }
     const apiKey = readTmdbKey();
@@ -986,8 +628,8 @@ var GogoanimesProvider = (() => {
         `${TMDB_API_BASE}/find/${encodeURIComponent(tmdbId)}?api_key=${apiKey}&external_source=imdb_id`
       );
       const list = found ? type === "movie" ? found.movie_results : found.tv_results : null;
-      const first = list && list.length ? list[0] : null;
-      if (!first || !first.id) {
+      const first = list?.length ? list[0] : null;
+      if (!first?.id) {
         log.warn(`IMDb id ${tmdbId} could not be resolved to a TMDB id.`);
         return result;
       }
@@ -1073,47 +715,525 @@ var GogoanimesProvider = (() => {
     }
   }
 
+  // src/shared/dom.js
+  function loadHtml(html) {
+    const cheerioLib = typeof cheerio !== "undefined" && cheerio ? cheerio : globalThis.cheerio;
+    if (cheerioLib && typeof cheerioLib.load === "function")
+      return cheerioLib.load(html);
+    const runtimeRequire = typeof globalThis !== "undefined" ? globalThis.require : null;
+    if (typeof runtimeRequire === "function") {
+      const loaded = runtimeRequire("cheerio");
+      if (loaded && typeof loaded.load === "function") return loaded.load(html);
+    }
+    throw new Error("cheerio is not available in this runtime");
+  }
+
+  // src/shared/episodes.js
+  function episodeNumberFromUrl(value) {
+    const match = String(
+      value === null || value === void 0 ? "" : value
+    ).match(/(?:episode|ep)[-_/]?0*(\d+)/i);
+    return match ? toPositiveInt(match[1]) : null;
+  }
+
+  // src/gogoanimes/config.js
+  var GOGOANIMES = {
+    baseUrl: "https://gogoanimes.cv",
+    budgetMs: 5e4,
+    label: "GogoAnimes",
+    locale: "en",
+    providerId: "gogoanimes",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  };
+
+  // src/gogoanimes/client.js
+  function createGogoanimesClient({ http, log }) {
+    const baseUrl = GOGOANIMES.baseUrl;
+    const siteReferer = `${baseUrl}/`;
+    async function search(query) {
+      const html = await http.text(`${baseUrl}/?s=${encodeURIComponent(query)}`, {
+        headers: { Referer: siteReferer }
+      });
+      if (!html) return [];
+      const $ = loadHtml(html);
+      const results = [];
+      const seen = {};
+      $("div.last_episodes ul.items li").each((_index, element) => {
+        const item = $(element);
+        const link = item.find("p.name a").first();
+        if (!link?.length) return;
+        const href = link.attr("href") || "";
+        if (href.indexOf("/anime/") === -1) return;
+        const url = absoluteUrl(href, baseUrl);
+        if (!url || seen[url]) return;
+        const title = cleanText(link.attr("title") || link.text());
+        if (!title) return;
+        seen[url] = true;
+        results.push({ title, url });
+      });
+      log.debug(`Search "${query}" returned ${results.length} result(s).`);
+      return results;
+    }
+    async function getEpisode(animeUrl, episode) {
+      const html = await http.text(animeUrl, {
+        headers: { Referer: siteReferer }
+      });
+      if (!html) return null;
+      const $ = loadHtml(html);
+      const ranges = [];
+      $("#episode_page a").each((_index, element) => {
+        const item = $(element);
+        const start = Number.parseInt(item.attr("data-range-start"), 10);
+        const end = Number.parseInt(item.attr("data-range-end"), 10);
+        const seriId = cleanText(item.attr("data-seri"));
+        if (Number.isFinite(start) && Number.isFinite(end) && seriId) {
+          ranges.push({ end, seriId, start });
+        }
+      });
+      const nonceMatch = html.match(/nonce\s*:\s*['"]([a-zA-Z0-9]+)['"]/);
+      const nonce = nonceMatch ? nonceMatch[1] : "";
+      const range = ranges.find((item) => episode >= item.start && episode <= item.end) || ranges[0];
+      if (range && nonce) {
+        const body = `action=load_episode_range&range_start=${encodeURIComponent(range.start)}&range_end=${encodeURIComponent(range.end)}&seri_id=${encodeURIComponent(range.seriId)}&nonce=${encodeURIComponent(nonce)}`;
+        const data = await http.json(`${baseUrl}/wp-admin/admin-ajax.php`, {
+          body,
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Referer: animeUrl,
+            "X-Requested-With": "XMLHttpRequest"
+          },
+          method: "POST"
+        });
+        const payload = data?.success && typeof data.data === "string" ? data.data : "";
+        if (payload) {
+          const $$ = loadHtml(payload);
+          let found = null;
+          $$("a[href]").each((_index, element) => {
+            if (found) return;
+            const url = absoluteUrl($$(element).attr("href"), baseUrl);
+            if (!url) return;
+            const number = episodeNumberFromUrl(url);
+            if (number === episode) found = { number, url };
+          });
+          if (found) {
+            log.debug(`AJAX episode list resolved episode ${episode}.`);
+            return found;
+          }
+        }
+      }
+      const slugMatch = String(animeUrl).match(/\/anime\/([^/?#]+)/i);
+      const slug = slugMatch ? slugMatch[1] : "";
+      if (!slug) return null;
+      log.debug(
+        `Falling back to the constructed episode url for episode ${episode}.`
+      );
+      return { number: episode, url: `${baseUrl}/${slug}-episode-${episode}/` };
+    }
+    async function getCandidates(episodeUrl) {
+      const html = await http.text(episodeUrl, {
+        headers: { Referer: siteReferer }
+      });
+      if (!html) return [];
+      const $ = loadHtml(html);
+      const candidates = [];
+      const seen = {};
+      function add(url, label) {
+        if (!url) return;
+        const decoded = String(url).replace(/&amp;/g, "&").trim();
+        if (!decoded) return;
+        const absolute = absoluteUrl(decoded, baseUrl);
+        if (!absolute || seen[absolute]) return;
+        seen[absolute] = true;
+        candidates.push({ label: cleanText(label) || "Server", url: absolute });
+      }
+      $(".anime_muti_link a").each((_index, element) => {
+        const item = $(element);
+        const video = item.attr("data-video");
+        if (!video) return;
+        const match = String(video).match(/src=["']([^"']+)/i);
+        const label = cleanText(item.text()).replace(/choose this server/i, "");
+        add(match ? match[1] : video, label);
+      });
+      $("#pembed iframe").each((_index, element) => {
+        add($(element).attr("src"), "Player");
+      });
+      log.debug(`${episodeUrl} exposes ${candidates.length} player(s).`);
+      return candidates;
+    }
+    return { getCandidates, getEpisode, search };
+  }
+
+  // src/shared/aes.js
+  var SBOX = new Uint8Array(256);
+  var INV_SBOX = new Uint8Array(256);
+  function xtime(value) {
+    return (value << 1 ^ (value & 128 ? 27 : 0)) & 255;
+  }
+  function multiply(a, b) {
+    let product = 0;
+    let left = a;
+    let right = b;
+    for (let index = 0; index < 8; index += 1) {
+      if (right & 1) product ^= left;
+      const high = left & 128;
+      left = left << 1 & 255;
+      if (high) left ^= 27;
+      right >>= 1;
+    }
+    return product;
+  }
+  function inverse(value) {
+    if (!value) return 0;
+    for (let candidate = 1; candidate < 256; candidate += 1) {
+      if (multiply(value, candidate) === 1) return candidate;
+    }
+    return 0;
+  }
+  function rotateLeft(value, shift) {
+    return (value << shift | value >> 8 - shift) & 255;
+  }
+  (function buildTables() {
+    for (let value = 0; value < 256; value += 1) {
+      const inv = inverse(value);
+      const substituted = (inv ^ rotateLeft(inv, 1) ^ rotateLeft(inv, 2) ^ rotateLeft(inv, 3) ^ rotateLeft(inv, 4) ^ 99) & 255;
+      SBOX[value] = substituted;
+      INV_SBOX[substituted] = value;
+    }
+  })();
+  function expandKey(key) {
+    const keyBytes = key.length;
+    const rounds = keyBytes / 4 + 6;
+    const expanded = new Uint8Array(16 * (rounds + 1));
+    expanded.set(key);
+    let generated = keyBytes;
+    let rcon = 1;
+    const temp = new Uint8Array(4);
+    while (generated < expanded.length) {
+      for (let index = 0; index < 4; index += 1)
+        temp[index] = expanded[generated - 4 + index];
+      if (generated % keyBytes === 0) {
+        const first = temp[0];
+        temp[0] = temp[1];
+        temp[1] = temp[2];
+        temp[2] = temp[3];
+        temp[3] = first;
+        for (let index = 0; index < 4; index += 1)
+          temp[index] = SBOX[temp[index]];
+        temp[0] ^= rcon;
+        rcon = xtime(rcon);
+      } else if (keyBytes > 24 && generated % keyBytes === 16) {
+        for (let index = 0; index < 4; index += 1)
+          temp[index] = SBOX[temp[index]];
+      }
+      for (let index = 0; index < 4; index += 1) {
+        expanded[generated] = expanded[generated - keyBytes] ^ temp[index];
+        generated += 1;
+      }
+    }
+    return { expanded, rounds };
+  }
+  function addRoundKey(state, expanded, round) {
+    const offset = round * 16;
+    for (let index = 0; index < 16; index += 1)
+      state[index] ^= expanded[offset + index];
+  }
+  function invSubBytes(state) {
+    for (let index = 0; index < 16; index += 1)
+      state[index] = INV_SBOX[state[index]];
+  }
+  function invShiftRows(state) {
+    for (let row = 1; row < 4; row += 1) {
+      const values = [
+        state[row],
+        state[row + 4],
+        state[row + 8],
+        state[row + 12]
+      ];
+      for (let column = 0; column < 4; column += 1) {
+        state[row + 4 * ((column + row) % 4)] = values[column];
+      }
+    }
+  }
+  function invMixColumns(state) {
+    for (let column = 0; column < 4; column += 1) {
+      const offset = column * 4;
+      const a0 = state[offset];
+      const a1 = state[offset + 1];
+      const a2 = state[offset + 2];
+      const a3 = state[offset + 3];
+      state[offset] = multiply(a0, 14) ^ multiply(a1, 11) ^ multiply(a2, 13) ^ multiply(a3, 9);
+      state[offset + 1] = multiply(a0, 9) ^ multiply(a1, 14) ^ multiply(a2, 11) ^ multiply(a3, 13);
+      state[offset + 2] = multiply(a0, 13) ^ multiply(a1, 9) ^ multiply(a2, 14) ^ multiply(a3, 11);
+      state[offset + 3] = multiply(a0, 11) ^ multiply(a1, 13) ^ multiply(a2, 9) ^ multiply(a3, 14);
+    }
+  }
+  function decryptBlock(block, expanded, rounds) {
+    const state = new Uint8Array(block);
+    addRoundKey(state, expanded, rounds);
+    for (let round = rounds - 1; round >= 1; round -= 1) {
+      invShiftRows(state);
+      invSubBytes(state);
+      addRoundKey(state, expanded, round);
+      invMixColumns(state);
+    }
+    invShiftRows(state);
+    invSubBytes(state);
+    addRoundKey(state, expanded, 0);
+    return state;
+  }
+  function stripPadding(bytes) {
+    if (!bytes.length) return bytes;
+    const padding = bytes[bytes.length - 1];
+    if (padding < 1 || padding > 16 || padding > bytes.length) return bytes;
+    for (let index = bytes.length - padding; index < bytes.length; index += 1) {
+      if (bytes[index] !== padding) return bytes;
+    }
+    return bytes.subarray(0, bytes.length - padding);
+  }
+  function aesCbcDecrypt(cipher, key, iv) {
+    if (!cipher?.length || cipher.length % 16 !== 0) {
+      throw new Error("AES-CBC ciphertext length must be a multiple of 16");
+    }
+    if (!key || key.length !== 16 && key.length !== 24 && key.length !== 32) {
+      throw new Error("AES key must be 16, 24 or 32 bytes");
+    }
+    if (iv?.length !== 16) throw new Error("AES-CBC needs a 16 byte IV");
+    const { expanded, rounds } = expandKey(key);
+    const output = new Uint8Array(cipher.length);
+    let previous = iv;
+    for (let offset = 0; offset < cipher.length; offset += 16) {
+      const block = cipher.subarray(offset, offset + 16);
+      const decrypted = decryptBlock(block, expanded, rounds);
+      for (let index = 0; index < 16; index += 1) {
+        output[offset + index] = decrypted[index] ^ previous[index];
+      }
+      previous = block;
+    }
+    return stripPadding(output);
+  }
+  function decodeBase64(value) {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const input = String(value || "").replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/=]/g, "");
+    const output = [];
+    let buffer = 0;
+    let bits = 0;
+    for (let index = 0; index < input.length; index += 1) {
+      const character = input.charAt(index);
+      if (character === "=") break;
+      const valueAtIndex = alphabet.indexOf(character);
+      if (valueAtIndex === -1) continue;
+      buffer = buffer << 6 | valueAtIndex;
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        output.push(buffer >> bits & 255);
+      }
+    }
+    return new Uint8Array(output);
+  }
+  function padBytes(text, size) {
+    const output = new Uint8Array(size);
+    const source = utf8Encode(String(text));
+    output.set(source.subarray(0, Math.min(size, source.length)));
+    return output;
+  }
+  function utf8Encode(text) {
+    const bytes = [];
+    for (let index = 0; index < text.length; index += 1) {
+      let code = text.charCodeAt(index);
+      if (code >= 55296 && code <= 56319 && index + 1 < text.length) {
+        const low = text.charCodeAt(index + 1);
+        if (low >= 56320 && low <= 57343) {
+          code = 65536 + (code - 55296 << 10) + (low - 56320);
+          index += 1;
+        }
+      }
+      if (code < 128) {
+        bytes.push(code);
+      } else if (code < 2048) {
+        bytes.push(192 | code >> 6, 128 | code & 63);
+      } else if (code < 65536) {
+        bytes.push(
+          224 | code >> 12,
+          128 | code >> 6 & 63,
+          128 | code & 63
+        );
+      } else {
+        bytes.push(
+          240 | code >> 18,
+          128 | code >> 12 & 63,
+          128 | code >> 6 & 63,
+          128 | code & 63
+        );
+      }
+    }
+    return new Uint8Array(bytes);
+  }
+  function utf8Decode(bytes) {
+    let output = "";
+    let index = 0;
+    while (index < bytes.length) {
+      const first = bytes[index];
+      index += 1;
+      if (first < 128) {
+        output += String.fromCharCode(first);
+      } else if (first >= 192 && first < 224) {
+        output += String.fromCharCode(
+          (first & 31) << 6 | bytes[index] & 63
+        );
+        index += 1;
+      } else if (first >= 224 && first < 240) {
+        output += String.fromCharCode(
+          (first & 15) << 12 | (bytes[index] & 63) << 6 | bytes[index + 1] & 63
+        );
+        index += 2;
+      } else if (first >= 240) {
+        let codePoint = (first & 7) << 18 | (bytes[index] & 63) << 12 | (bytes[index + 1] & 63) << 6 | bytes[index + 2] & 63;
+        index += 3;
+        codePoint -= 65536;
+        output += String.fromCharCode(
+          55296 + (codePoint >> 10),
+          56320 + (codePoint & 1023)
+        );
+      } else {
+        output += String.fromCharCode(first);
+      }
+    }
+    return output;
+  }
+
+  // src/gogoanimes/player.js
+  var MEGA_ORIGIN = "https://megaplay.buzz";
+  var MEGA_KEY = "i?LMTAx0Q6,:}50U";
+  var MEGA_IV = "W0;27ToaUpl_P%'c";
+  async function resolveMegaplay(embedUrl, { http, log }) {
+    const siteReferer = `${GOGOANIMES.baseUrl}/`;
+    let page = await http.text(embedUrl, { headers: { Referer: siteReferer } });
+    if (!page) return null;
+    let megaUrl = embedUrl;
+    if (!/megaplay\.buzz/i.test(megaUrl)) {
+      const iframe = page.match(
+        /<iframe[^>]+src=["']([^"']*megaplay[^"']*)["']/i
+      );
+      const direct = page.match(
+        /https?:\/\/[^"'\s]+megaplay\.buzz\/stream\/[^"'\s]+/i
+      );
+      const target = iframe ? iframe[1] : direct ? direct[0] : "";
+      if (!target) {
+        log.warn(`No MegaPlay player found at ${embedUrl}`);
+        return null;
+      }
+      megaUrl = absoluteUrl(target.replace(/&amp;/g, "&"), embedUrl);
+      page = await http.text(megaUrl, { headers: { Referer: embedUrl } });
+      if (!page) return null;
+    }
+    const idMatch = page.match(/data-mediaid=["'](\d+)["']/i);
+    const mediaId = idMatch ? idMatch[1] : "";
+    if (!mediaId) {
+      log.warn("MegaPlay page has no media id.");
+      return null;
+    }
+    const data = await http.json(
+      `${MEGA_ORIGIN}/stream/getSources?id=${encodeURIComponent(mediaId)}`,
+      {
+        headers: {
+          Accept: "application/json",
+          Referer: megaUrl,
+          "X-Requested-With": "XMLHttpRequest"
+        }
+      }
+    );
+    if (!data?.enc) {
+      log.warn(`MegaPlay sources are unavailable for ${mediaId}.`);
+      return null;
+    }
+    let payload = null;
+    try {
+      const decrypted = aesCbcDecrypt(
+        decodeBase64(data.enc),
+        padBytes(MEGA_KEY, 32),
+        padBytes(MEGA_IV, 16)
+      );
+      payload = JSON.parse(utf8Decode(decrypted));
+    } catch (error) {
+      log.warn(
+        `MegaPlay payload could not be decrypted: ${error?.message ? error.message : error}`
+      );
+      return null;
+    }
+    const firstSource = payload && Array.isArray(payload.sources) && payload.sources.length ? payload.sources[0] : null;
+    const file = payload?.file || firstSource && (firstSource.file || firstSource.url) || "";
+    if (!file) {
+      log.warn("MegaPlay payload has no stream url.");
+      return null;
+    }
+    const subtitles = (Array.isArray(data.tracks) ? data.tracks : []).filter((track) => track && track.kind === "captions" && track.file).map((track) => ({
+      headers: {
+        Referer: `${MEGA_ORIGIN}/`,
+        "User-Agent": GOGOANIMES.userAgent
+      },
+      language: "en",
+      name: track.label || "English",
+      url: track.file
+    }));
+    return {
+      origin: MEGA_ORIGIN,
+      referer: MEGA_ORIGIN,
+      subtitles,
+      url: file
+    };
+  }
+
   // src/gogoanimes/provider.js
   async function getStreams(contentId, mediaType, season, episode) {
     const log = createLogger(GOGOANIMES.label);
     const http = createHttpClient({
-      userAgent: GOGOANIMES.userAgent,
       budgetMs: GOGOANIMES.budgetMs,
+      log,
       startedAt: Date.now(),
-      log
+      userAgent: GOGOANIMES.userAgent
     });
     const client = createGogoanimesClient({ http, log });
     const type = mediaType === "movie" ? "movie" : "tv";
     const seasonNumber = toPositiveInt(season);
     const episodeNumber = toPositiveInt(episode) || 1;
-    log.info(`Request id=${contentId} type=${type} season=${seasonNumber} episode=${episodeNumber}`);
+    log.info(
+      `Request id=${contentId} type=${type} season=${seasonNumber} episode=${episodeNumber}`
+    );
     const meta = await resolveTitles({
       contentId,
-      mediaType: type,
-      season: seasonNumber,
       http,
+      locale: GOGOANIMES.locale,
       log,
-      locale: GOGOANIMES.locale
+      mediaType: type,
+      season: seasonNumber
     });
     if (!meta.titles.length) {
       log.warn("No title candidates available; cannot search the site.");
       return [];
     }
     const match = await findBestMatch({
-      titles: meta.titles,
-      season: seasonNumber,
+      log,
       maxQueries: 5,
       search: client.search,
-      log
+      season: seasonNumber,
+      titles: meta.titles
     });
     if (!match) {
       log.warn("No matching series found on GogoAnimes.");
       return [];
     }
-    const targetEpisode = resolveTargetEpisode(episodeNumber, seasonNumber, match.item.title, meta);
+    const targetEpisode = resolveTargetEpisode(
+      episodeNumber,
+      seasonNumber,
+      match.item.title,
+      meta
+    );
     const picked = await client.getEpisode(match.item.url, targetEpisode);
     if (!picked) {
-      log.warn(`Episode ${targetEpisode} is not available for "${match.item.title}".`);
+      log.warn(
+        `Episode ${targetEpisode} is not available for "${match.item.title}".`
+      );
       return [];
     }
     const candidates = await client.getCandidates(picked.url);
@@ -1124,19 +1244,19 @@ var GogoanimesProvider = (() => {
     const label = type === "movie" ? "Movie" : `Episode ${picked.number}`;
     return collectStreams(candidates, {
       http,
+      language: "en",
       log,
+      maxStreams: 2,
+      mp4Quality: "HD",
       name: GOGOANIMES.label,
       providerId: GOGOANIMES.providerId,
-      userAgent: GOGOANIMES.userAgent,
-      language: "en",
-      siteReferer: `${GOGOANIMES.baseUrl}/`,
-      mp4Quality: "HD",
-      maxStreams: 2,
       resolve: (candidate) => resolveMegaplay(candidate.url, { http, log }),
-      title: (candidate) => `${match.item.title} • ${label} • ${candidate.label}`
+      siteReferer: `${GOGOANIMES.baseUrl}/`,
+      title: (candidate) => `${match.item.title} • ${label} • ${candidate.label}`,
+      userAgent: GOGOANIMES.userAgent
     });
   }
-  function resolveTargetEpisode(episode, season, title, meta) {
+  function resolveTargetEpisode(episode, season, _title, meta) {
     const counts = meta.seasonCounts || {};
     const expected = season ? counts[season] : null;
     if (!season || season <= 1 || !expected) return episode;

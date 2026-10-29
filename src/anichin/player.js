@@ -1,13 +1,13 @@
-import { ANICHIN } from './config.js';
-import { resolveEmbeddedVideo } from '../shared/player.js';
+import { resolveEmbeddedVideo } from "../shared/player.js";
+import { ANICHIN } from "./config.js";
 
 const QUALITY_BY_NAME = {
-  full: '1080p',
-  hd: '720p',
-  sd: '480p',
-  low: '360p',
-  lowest: '240p',
-  mobile: '144p',
+	full: "1080p",
+	hd: "720p",
+	low: "360p",
+	lowest: "240p",
+	mobile: "144p",
+	sd: "480p",
 };
 
 /**
@@ -15,8 +15,8 @@ const QUALITY_BY_NAME = {
  * @returns {string|null}
  */
 export function extractOkRuId(url) {
-  const match = String(url || '').match(/ok\.ru\/(?:videoembed|video)\/(\d+)/i);
-  return match ? match[1] : null;
+	const match = String(url || "").match(/ok\.ru\/(?:videoembed|video)\/(\d+)/i);
+	return match ? match[1] : null;
 }
 
 /**
@@ -28,56 +28,58 @@ export function extractOkRuId(url) {
  * @returns {Promise<{ url: string, referer: string, origin: string, quality?: string }|null>}
  */
 export async function resolveOkRu(embedUrl, { http, log }) {
-  const id = extractOkRuId(embedUrl);
-  if (!id) return null;
+	const id = extractOkRuId(embedUrl);
+	if (!id) return null;
 
-  const data = await http.json('https://ok.ru/dk', {
-    method: 'POST',
-    body: `cmd=videoPlayerMetadata&mid=${encodeURIComponent(id)}`,
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'X-Requested-With': 'XMLHttpRequest',
-      Referer: 'https://ok.ru/',
-      Origin: 'https://ok.ru',
-    },
-  });
+	const data = await http.json("https://ok.ru/dk", {
+		body: `cmd=videoPlayerMetadata&mid=${encodeURIComponent(id)}`,
+		headers: {
+			"Content-Type": "application/x-www-form-urlencoded",
+			Origin: "https://ok.ru",
+			Referer: "https://ok.ru/",
+			"X-Requested-With": "XMLHttpRequest",
+		},
+		method: "POST",
+	});
 
-  if (!data) {
-    log.warn(`ok.ru metadata is unavailable for ${id}.`);
-    return null;
-  }
+	if (!data) {
+		log.warn(`ok.ru metadata is unavailable for ${id}.`);
+		return null;
+	}
 
-  if (typeof data.hlsManifestUrl === 'string' && data.hlsManifestUrl) {
-    return {
-      url: data.hlsManifestUrl,
-      referer: 'https://ok.ru/',
-      origin: 'https://ok.ru',
-    };
-  }
+	if (typeof data.hlsManifestUrl === "string" && data.hlsManifestUrl) {
+		return {
+			origin: "https://ok.ru",
+			referer: "https://ok.ru/",
+			url: data.hlsManifestUrl,
+		};
+	}
 
-  const videos = Array.isArray(data.videos) ? data.videos : [];
-  const order = ['full', 'hd', 'sd', 'low', 'lowest', 'mobile'];
-  let best = null;
+	const videos = Array.isArray(data.videos) ? data.videos : [];
+	const order = ["full", "hd", "sd", "low", "lowest", "mobile"];
+	let best = null;
 
-  for (const name of order) {
-    const found = videos.find((video) => video && video.name === name && video.url);
-    if (found) {
-      best = found;
-      break;
-    }
-  }
+	for (const name of order) {
+		const found = videos.find(
+			(video) => video && video.name === name && video.url,
+		);
+		if (found) {
+			best = found;
+			break;
+		}
+	}
 
-  if (!best) {
-    log.warn(`ok.ru video ${id} has no playable source.`);
-    return null;
-  }
+	if (!best) {
+		log.warn(`ok.ru video ${id} has no playable source.`);
+		return null;
+	}
 
-  return {
-    url: best.url,
-    referer: 'https://ok.ru/',
-    origin: 'https://ok.ru',
-    quality: QUALITY_BY_NAME[best.name] || 'HD',
-  };
+	return {
+		origin: "https://ok.ru",
+		quality: QUALITY_BY_NAME[best.name] || "HD",
+		referer: "https://ok.ru/",
+		url: best.url,
+	};
 }
 
 /**
@@ -89,10 +91,14 @@ export async function resolveOkRu(embedUrl, { http, log }) {
  * @returns {Promise<any>}
  */
 export async function resolveAnichinPlayer(candidate, { http, log }) {
-  if (/ok\.ru/i.test(candidate.url)) {
-    const resolved = await resolveOkRu(candidate.url, { http, log });
-    if (resolved) return resolved;
-  }
+	if (/ok\.ru/i.test(candidate.url)) {
+		const resolved = await resolveOkRu(candidate.url, { http, log });
+		if (resolved) return resolved;
+	}
 
-  return resolveEmbeddedVideo(candidate.url, { http, log, referer: `${ANICHIN.baseUrl}/` });
+	return resolveEmbeddedVideo(candidate.url, {
+		http,
+		log,
+		referer: `${ANICHIN.baseUrl}/`,
+	});
 }

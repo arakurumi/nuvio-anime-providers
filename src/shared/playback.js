@@ -1,5 +1,5 @@
-import { buildStream, probeHlsQuality } from './media.js';
-import { resolveEmbeddedVideo } from './player.js';
+import { buildStream, probeHlsQuality } from "./media.js";
+import { resolveEmbeddedVideo } from "./player.js";
 
 /**
  * Resolves player candidates into Nuvio stream objects.
@@ -23,67 +23,77 @@ import { resolveEmbeddedVideo } from './player.js';
  * @param {(candidate: { label?: string, url: string }) => string} [options.title]
  * @returns {Promise<Array<Record<string, any>>>}
  */
-export async function collectStreams(candidates, {
-  http,
-  log,
-  name,
-  providerId,
-  userAgent,
-  language,
-  siteReferer,
-  mp4Quality = '360p',
-  maxStreams = 2,
-  resolve,
-  title,
-}) {
-  const streams = [];
-  const seen = {};
-  const list = Array.isArray(candidates) ? candidates : [];
+export async function collectStreams(
+	candidates,
+	{
+		http,
+		log,
+		name,
+		providerId,
+		userAgent,
+		language,
+		siteReferer,
+		mp4Quality = "360p",
+		maxStreams = 2,
+		resolve,
+		title,
+	},
+) {
+	const streams = [];
+	const seen = {};
+	const list = Array.isArray(candidates) ? candidates : [];
 
-  for (const candidate of list) {
-    if (!candidate || !candidate.url) continue;
-    if (streams.length >= maxStreams || http.remaining() < 18000) break;
+	for (const candidate of list) {
+		if (!candidate?.url) continue;
+		if (streams.length >= maxStreams || http.remaining() < 18000) break;
 
-    let resolved = null;
+		let resolved = null;
 
-    try {
-      resolved = resolve
-        ? await resolve(candidate)
-        : await resolveEmbeddedVideo(candidate.url, { http, log, referer: siteReferer });
-    } catch (error) {
-      log.debug(`Player ${candidate.url} failed: ${error && error.message ? error.message : error}`);
-      continue;
-    }
+		try {
+			resolved = resolve
+				? await resolve(candidate)
+				: await resolveEmbeddedVideo(candidate.url, {
+						http,
+						log,
+						referer: siteReferer,
+					});
+		} catch (error) {
+			log.debug(
+				`Player ${candidate.url} failed: ${error?.message ? error.message : error}`,
+			);
+			continue;
+		}
 
-    if (!resolved || !resolved.url || seen[resolved.url]) continue;
-    seen[resolved.url] = true;
+		if (!resolved?.url || seen[resolved.url]) continue;
+		seen[resolved.url] = true;
 
-    const isHls = /\.m3u8/i.test(resolved.url);
-    let quality = resolved.quality || null;
+		const isHls = /\.m3u8/i.test(resolved.url);
+		let quality = resolved.quality || null;
 
-    if (!quality && isHls) {
-      quality = (await probeHlsQuality(http, resolved.url, resolved.referer)) || 'HD';
-    }
+		if (!quality && isHls) {
+			quality =
+				(await probeHlsQuality(http, resolved.url, resolved.referer)) || "HD";
+		}
 
-    if (!quality) quality = isHls ? 'HD' : mp4Quality;
+		if (!quality) quality = isHls ? "HD" : mp4Quality;
 
-    streams.push(
-      buildStream({
-        name,
-        provider: providerId,
-        title: title ? title(candidate) : candidate.label || name,
-        url: resolved.url,
-        quality,
-        type: isHls ? 'hls' : 'mp4',
-        language,
-        referer: resolved.referer,
-        origin: resolved.origin || resolved.referer,
-        subtitles: resolved.subtitles,
-        userAgent,
-      })
-    );
-  }
+		streams.push(
+			buildStream({
+				language,
+				name,
+				origin: resolved.origin || resolved.referer,
+				provider: providerId,
+				quality,
+				referer: resolved.referer,
+				subtitles: resolved.subtitles,
+				title: title ? title(candidate) : candidate.label || name,
+				type: isHls ? "hls" : "mp4",
+				url: resolved.url,
+				userAgent,
+			}),
+		);
+	}
 
-  log.debug(`Resolved ${streams.length} stream(s).`);
-  return streams;
+	log.debug(`Resolved ${streams.length} stream(s).`);
+	return streams;
 }

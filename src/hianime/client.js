@@ -1,6 +1,6 @@
-import { loadHtml } from '../shared/dom.js';
-import { cleanText } from '../shared/text.js';
-import { HIANIME } from './config.js';
+import { loadHtml } from "../shared/dom.js";
+import { cleanText } from "../shared/text.js";
+import { HIANIME } from "./config.js";
 
 /**
  * Extracts the site's numeric anime id and slug from a result link.
@@ -10,14 +10,14 @@ import { HIANIME } from './config.js';
  * @returns {{ slug: string, id: string }|null}
  */
 function parseAnimeHref(href) {
-  const path = String(href || '')
-    .replace(/^https?:\/\/[^/]+/i, '')
-    .split('?')[0]
-    .split('#')[0];
+	const path = String(href || "")
+		.replace(/^https?:\/\/[^/]+/i, "")
+		.split("?")[0]
+		.split("#")[0];
 
-  const match = path.match(/\/(?:watch\/)?([^/]+?)-(\d+)\/?$/);
-  if (!match) return null;
-  return { slug: match[1], id: match[2] };
+	const match = path.match(/\/(?:watch\/)?([^/]+?)-(\d+)\/?$/);
+	if (!match) return null;
+	return { id: match[2], slug: match[1] };
 }
 
 /**
@@ -25,17 +25,17 @@ function parseAnimeHref(href) {
  * @returns {Array<{ name: string, type: string, url: string }>}
  */
 function sortServers(servers) {
-  const preference = {};
-  HIANIME.preferredServers.forEach((name, index) => {
-    preference[name] = index;
-  });
+	const preference = {};
+	HIANIME.preferredServers.forEach((name, index) => {
+		preference[name] = index;
+	});
 
-  return servers.slice().sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'sub' ? -1 : 1;
-    const left = preference[a.name] === undefined ? 99 : preference[a.name];
-    const right = preference[b.name] === undefined ? 99 : preference[b.name];
-    return left - right;
-  });
+	return servers.slice().sort((a, b) => {
+		if (a.type !== b.type) return a.type === "sub" ? -1 : 1;
+		const left = preference[a.name] === undefined ? 99 : preference[a.name];
+		const right = preference[b.name] === undefined ? 99 : preference[b.name];
+		return left - right;
+	});
 }
 
 /**
@@ -47,129 +47,135 @@ function sortServers(servers) {
  * @param {ReturnType<import('../shared/log.js').createLogger>} options.log
  */
 export function createHianimeClient({ http, log }) {
-  const baseUrl = HIANIME.baseUrl;
-  const siteReferer = `${baseUrl}/`;
+	const baseUrl = HIANIME.baseUrl;
+	const siteReferer = `${baseUrl}/`;
 
-  /**
-   * @param {string} query
-   * @returns {Promise<Array<{ title: string, jname: string, id: string, slug: string, pageUrl: string }>>}
-   */
-  async function search(query) {
-    const html = await http.text(`${baseUrl}/search?keyword=${encodeURIComponent(query)}`, {
-      headers: { Referer: siteReferer },
-    });
-    if (!html) return [];
+	/**
+	 * @param {string} query
+	 * @returns {Promise<Array<{ title: string, jname: string, id: string, slug: string, pageUrl: string }>>}
+	 */
+	async function search(query) {
+		const html = await http.text(
+			`${baseUrl}/search?keyword=${encodeURIComponent(query)}`,
+			{
+				headers: { Referer: siteReferer },
+			},
+		);
+		if (!html) return [];
 
-    const $ = loadHtml(html);
-    const results = [];
+		const $ = loadHtml(html);
+		const results = [];
 
-    $('.flw-item').each(function (index, element) {
-      const item = $(element);
-      const link = item.find('.film-name a').first();
-      if (!link || !link.length) return;
+		$(".flw-item").each((_index, element) => {
+			const item = $(element);
+			const link = item.find(".film-name a").first();
+			if (!link?.length) return;
 
-      const info = parseAnimeHref(link.attr('href'));
-      if (!info) return;
+			const info = parseAnimeHref(link.attr("href"));
+			if (!info) return;
 
-      const title = cleanText(link.attr('title') || link.text());
-      if (!title) return;
+			const title = cleanText(link.attr("title") || link.text());
+			if (!title) return;
 
-      results.push({
-        title,
-        jname: cleanText(link.attr('data-jname')),
-        id: info.id,
-        slug: info.slug,
-        pageUrl: `${baseUrl}/watch/${info.slug}-${info.id}`,
-      });
-    });
+			results.push({
+				id: info.id,
+				jname: cleanText(link.attr("data-jname")),
+				pageUrl: `${baseUrl}/watch/${info.slug}-${info.id}`,
+				slug: info.slug,
+				title,
+			});
+		});
 
-    log.debug(`Search "${query}" returned ${results.length} result(s).`);
-    return results;
-  }
+		log.debug(`Search "${query}" returned ${results.length} result(s).`);
+		return results;
+	}
 
-  /**
-   * @param {{ id: string, pageUrl: string }} anime
-   * @returns {Promise<{ byNumber: Record<number, string>, total: number }|null>}
-   */
-  async function getEpisodes(anime) {
-    const data = await http.json(`${baseUrl}/api/theme/episode/list/${anime.id}`, {
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-        Referer: anime.pageUrl,
-      },
-    });
+	/**
+	 * @param {{ id: string, pageUrl: string }} anime
+	 * @returns {Promise<{ byNumber: Record<number, string>, total: number }|null>}
+	 */
+	async function getEpisodes(anime) {
+		const data = await http.json(
+			`${baseUrl}/api/theme/episode/list/${anime.id}`,
+			{
+				headers: {
+					Referer: anime.pageUrl,
+					"X-Requested-With": "XMLHttpRequest",
+				},
+			},
+		);
 
-    if (!data || !data.html) {
-      log.warn(`Episode list is unavailable for anime ${anime.id}.`);
-      return null;
-    }
+		if (!data?.html) {
+			log.warn(`Episode list is unavailable for anime ${anime.id}.`);
+			return null;
+		}
 
-    const $ = loadHtml(data.html);
-    const byNumber = {};
-    let total = 0;
+		const $ = loadHtml(data.html);
+		const byNumber = {};
+		let total = 0;
 
-    $('.ep-item').each(function (index, element) {
-      const item = $(element);
-      const episodeId = cleanText(item.attr('data-id'));
-      const number = Number.parseInt(item.attr('data-number'), 10);
+		$(".ep-item").each((_index, element) => {
+			const item = $(element);
+			const episodeId = cleanText(item.attr("data-id"));
+			const number = Number.parseInt(item.attr("data-number"), 10);
 
-      if (!episodeId || !(number > 0) || byNumber[number]) return;
-      byNumber[number] = episodeId;
-      total += 1;
-    });
+			if (!episodeId || !(number > 0) || byNumber[number]) return;
+			byNumber[number] = episodeId;
+			total += 1;
+		});
 
-    log.debug(`Anime ${anime.id} exposes ${total} episode(s).`);
-    return { byNumber, total };
-  }
+		log.debug(`Anime ${anime.id} exposes ${total} episode(s).`);
+		return { byNumber, total };
+	}
 
-  /**
-   * @param {string} episodeId
-   * @returns {Promise<Array<{ name: string, type: string, url: string }>>}
-   */
-  async function getServers(episodeId) {
-    const data = await http.json(
-      `${baseUrl}/api/theme/episode/servers?episodeId=${encodeURIComponent(episodeId)}`,
-      {
-        headers: {
-          'X-Requested-With': 'XMLHttpRequest',
-          Referer: siteReferer,
-        },
-      }
-    );
+	/**
+	 * @param {string} episodeId
+	 * @returns {Promise<Array<{ name: string, type: string, url: string }>>}
+	 */
+	async function getServers(episodeId) {
+		const data = await http.json(
+			`${baseUrl}/api/theme/episode/servers?episodeId=${encodeURIComponent(episodeId)}`,
+			{
+				headers: {
+					Referer: siteReferer,
+					"X-Requested-With": "XMLHttpRequest",
+				},
+			},
+		);
 
-    if (!data || !data.html) {
-      log.warn(`Server list is unavailable for episode ${episodeId}.`);
-      return [];
-    }
+		if (!data?.html) {
+			log.warn(`Server list is unavailable for episode ${episodeId}.`);
+			return [];
+		}
 
-    const $ = loadHtml(data.html);
-    const servers = [];
-    const seen = {};
+		const $ = loadHtml(data.html);
+		const servers = [];
+		const seen = {};
 
-    $('.server-item').each(function (index, element) {
-      const item = $(element);
-      const hash = item.attr('data-hash');
-      if (!hash) return;
+		$(".server-item").each((_index, element) => {
+			const item = $(element);
+			const hash = item.attr("data-hash");
+			if (!hash) return;
 
-      let url = null;
-      try {
-        url = atob(hash);
-      } catch (error) {
-        url = null;
-      }
-      if (!url || !/^https?:\/\//i.test(url)) return;
+			let url = null;
+			try {
+				url = atob(hash);
+			} catch (_error) {
+				url = null;
+			}
+			if (!url || !/^https?:\/\//i.test(url)) return;
 
-      const type = (item.attr('data-type') || 'sub').toLowerCase();
-      const name = cleanText(item.attr('data-server-name') || 'Server');
-      const key = `${url}|${type}`;
-      if (seen[key]) return;
+			const type = (item.attr("data-type") || "sub").toLowerCase();
+			const name = cleanText(item.attr("data-server-name") || "Server");
+			const key = `${url}|${type}`;
+			if (seen[key]) return;
 
-      seen[key] = true;
-      servers.push({ name, type, url });
-    });
+			seen[key] = true;
+			servers.push({ name, type, url });
+		});
 
-    return sortServers(servers);
-  }
+		return sortServers(servers);
+	}
 
-  return { search, getEpisodes, getServers };
+	return { getEpisodes, getServers, search };
 }

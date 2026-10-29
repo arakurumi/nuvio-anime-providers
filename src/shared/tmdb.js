@@ -1,6 +1,6 @@
-import { cleanText, normalize, ordinal } from './text.js';
+import { cleanText, normalize, ordinal } from "./text.js";
 
-const TMDB_API_BASE = 'https://api.themoviedb.org/3';
+const TMDB_API_BASE = "https://api.themoviedb.org/3";
 const ID_PREFIX = /^(?:tmdb|movie|series|show)[:/]/i;
 const TRACKER_ID = /^(mal|anilist|kitsu|anidb|tvdb):(\d+)(?::(\d+))?$/i;
 const IMDB_ID = /^(?:imdb:)?(tt\d+)$/i;
@@ -12,10 +12,10 @@ const IMDB_ID = /^(?:imdb:)?(tt\d+)$/i;
  * @returns {string}
  */
 export function readTmdbKey() {
-  if (typeof globalThis !== 'undefined' && globalThis.TMDB_API_KEY) {
-    return String(globalThis.TMDB_API_KEY);
-  }
-  return '';
+	if (typeof globalThis !== "undefined" && globalThis.TMDB_API_KEY) {
+		return String(globalThis.TMDB_API_KEY);
+	}
+	return "";
 }
 
 /**
@@ -23,24 +23,25 @@ export function readTmdbKey() {
  * @returns {{ kind: string, value: string, seasonSuffix: number|null }}
  */
 export function parseContentId(rawId) {
-  const raw = cleanText(rawId);
+	const raw = cleanText(rawId);
 
-  const tracker = raw.match(TRACKER_ID);
-  if (tracker) {
-    return {
-      kind: tracker[1].toLowerCase(),
-      value: tracker[2],
-      seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null,
-    };
-  }
+	const tracker = raw.match(TRACKER_ID);
+	if (tracker) {
+		return {
+			kind: tracker[1].toLowerCase(),
+			seasonSuffix: tracker[3] ? Number.parseInt(tracker[3], 10) : null,
+			value: tracker[2],
+		};
+	}
 
-  const imdb = raw.match(IMDB_ID);
-  if (imdb) return { kind: 'imdb', value: imdb[1], seasonSuffix: null };
+	const imdb = raw.match(IMDB_ID);
+	if (imdb) return { kind: "imdb", seasonSuffix: null, value: imdb[1] };
 
-  const numeric = raw.replace(ID_PREFIX, '');
-  if (/^\d+$/.test(numeric)) return { kind: 'tmdb', value: numeric, seasonSuffix: null };
+	const numeric = raw.replace(ID_PREFIX, "");
+	if (/^\d+$/.test(numeric))
+		return { kind: "tmdb", seasonSuffix: null, value: numeric };
 
-  return { kind: 'unknown', value: raw, seasonSuffix: null };
+	return { kind: "unknown", seasonSuffix: null, value: raw };
 }
 
 /**
@@ -61,88 +62,103 @@ export function parseContentId(rawId) {
  * @param {string} [options.locale]
  * @returns {Promise<{ titles: string[], seasonCounts: Record<number, number>, name: string, malId: string|null, seasonSuffix: number|null }>}
  */
-export async function resolveTitles({ contentId, mediaType, season, http, log, locale = 'en' }) {
-  const parsed = parseContentId(contentId);
-  const result = {
-    titles: [],
-    seasonCounts: {},
-    name: '',
-    malId: null,
-    seasonSuffix: parsed.seasonSuffix,
-  };
+export async function resolveTitles({
+	contentId,
+	mediaType,
+	season,
+	http,
+	log,
+	locale = "en",
+}) {
+	const parsed = parseContentId(contentId);
+	const result = {
+		malId: null,
+		name: "",
+		seasonCounts: {},
+		seasonSuffix: parsed.seasonSuffix,
+		titles: [],
+	};
 
-  if (parsed.kind === 'mal') {
-    result.malId = parsed.value;
-    return result;
-  }
+	if (parsed.kind === "mal") {
+		result.malId = parsed.value;
+		return result;
+	}
 
-  if (parsed.kind !== 'tmdb' && parsed.kind !== 'imdb') {
-    log.warn(`Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`);
-    return result;
-  }
+	if (parsed.kind !== "tmdb" && parsed.kind !== "imdb") {
+		log.warn(
+			`Unsupported content id "${contentId}": only TMDB/IMDb/mal ids can be resolved without third-party metadata.`,
+		);
+		return result;
+	}
 
-  const apiKey = readTmdbKey();
-  if (!apiKey) {
-    log.error('TMDB_API_KEY is not available; Nuvio normally injects it.');
-    return result;
-  }
+	const apiKey = readTmdbKey();
+	if (!apiKey) {
+		log.error("TMDB_API_KEY is not available; Nuvio normally injects it.");
+		return result;
+	}
 
-  const type = mediaType === 'movie' ? 'movie' : 'tv';
-  let tmdbId = parsed.value;
+	const type = mediaType === "movie" ? "movie" : "tv";
+	let tmdbId = parsed.value;
 
-  if (parsed.kind === 'imdb') {
-    const found = await http.json(
-      `${TMDB_API_BASE}/find/${encodeURIComponent(tmdbId)}?api_key=${apiKey}&external_source=imdb_id`
-    );
-    const list = found ? (type === 'movie' ? found.movie_results : found.tv_results) : null;
-    const first = list && list.length ? list[0] : null;
+	if (parsed.kind === "imdb") {
+		const found = await http.json(
+			`${TMDB_API_BASE}/find/${encodeURIComponent(tmdbId)}?api_key=${apiKey}&external_source=imdb_id`,
+		);
+		const list = found
+			? type === "movie"
+				? found.movie_results
+				: found.tv_results
+			: null;
+		const first = list?.length ? list[0] : null;
 
-    if (!first || !first.id) {
-      log.warn(`IMDb id ${tmdbId} could not be resolved to a TMDB id.`);
-      return result;
-    }
-    tmdbId = String(first.id);
-  }
+		if (!first?.id) {
+			log.warn(`IMDb id ${tmdbId} could not be resolved to a TMDB id.`);
+			return result;
+		}
+		tmdbId = String(first.id);
+	}
 
-  const url =
-    `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}` +
-    `?api_key=${apiKey}&language=en-US&append_to_response=alternative_titles,translations`;
+	const url =
+		`${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}` +
+		`?api_key=${apiKey}&language=en-US&append_to_response=alternative_titles,translations`;
 
-  const details = await http.json(url);
-  if (!details) {
-    log.warn(`TMDB details are unavailable for ${tmdbId}.`);
-    return result;
-  }
+	const details = await http.json(url);
+	if (!details) {
+		log.warn(`TMDB details are unavailable for ${tmdbId}.`);
+		return result;
+	}
 
-  const name = type === 'movie' ? details.title : details.name;
-  const original = type === 'movie' ? details.original_title : details.original_name;
+	const name = type === "movie" ? details.title : details.name;
+	const original =
+		type === "movie" ? details.original_title : details.original_name;
 
-  addTitle(result.titles, name);
-  addTitle(result.titles, original);
+	addTitle(result.titles, name);
+	addTitle(result.titles, original);
 
-  if (type === 'tv' && Array.isArray(details.seasons)) {
-    for (const entry of details.seasons) {
-      if (entry && entry.season_number > 0 && entry.episode_count > 0) {
-        result.seasonCounts[entry.season_number] = entry.episode_count;
-      }
-    }
-  }
+	if (type === "tv" && Array.isArray(details.seasons)) {
+		for (const entry of details.seasons) {
+			if (entry && entry.season_number > 0 && entry.episode_count > 0) {
+				result.seasonCounts[entry.season_number] = entry.episode_count;
+			}
+		}
+	}
 
-  const alternativeBlock = details.alternative_titles || {};
-  const alternatives = type === 'movie' ? alternativeBlock.titles : alternativeBlock.results;
-  if (Array.isArray(alternatives)) {
-    for (const entry of alternatives) {
-      if (entry) addTitle(result.titles, entry.title);
-    }
-  }
+	const alternativeBlock = details.alternative_titles || {};
+	const alternatives =
+		type === "movie" ? alternativeBlock.titles : alternativeBlock.results;
+	if (Array.isArray(alternatives)) {
+		for (const entry of alternatives) {
+			if (entry) addTitle(result.titles, entry.title);
+		}
+	}
 
-  addSeasonVariants(result.titles, type, season);
+	addSeasonVariants(result.titles, type, season);
 
-  const localized = findTranslation(details.translations, locale);
-  if (localized) prioritizeTitle(result.titles, 1, localized);
+	const localized = findTranslation(details.translations, locale);
+	if (localized) prioritizeTitle(result.titles, 1, localized);
 
-  result.name = cleanText(name || original);
-  return result;
+	result.name = cleanText(name || original);
+	return result;
 }
 
 /**
@@ -150,15 +166,15 @@ export async function resolveTitles({ contentId, mediaType, season, http, log, l
  * @param {unknown} value
  */
 function addTitle(titles, value) {
-  const text = cleanText(value);
-  if (!text) return;
+	const text = cleanText(value);
+	if (!text) return;
 
-  const key = normalize(text);
-  if (!key) return;
-  for (const existing of titles) {
-    if (normalize(existing) === key) return;
-  }
-  titles.push(text);
+	const key = normalize(text);
+	if (!key) return;
+	for (const existing of titles) {
+		if (normalize(existing) === key) return;
+	}
+	titles.push(text);
 }
 
 /**
@@ -171,26 +187,26 @@ function addTitle(titles, value) {
  * @param {unknown} value
  */
 function prioritizeTitle(titles, index, value) {
-  const text = cleanText(value);
-  if (!text) return;
+	const text = cleanText(value);
+	if (!text) return;
 
-  const key = normalize(text);
-  if (!key) return;
+	const key = normalize(text);
+	if (!key) return;
 
-  let existingIndex = -1;
-  for (let position = 0; position < titles.length; position += 1) {
-    if (normalize(titles[position]) === key) {
-      existingIndex = position;
-      break;
-    }
-  }
+	let existingIndex = -1;
+	for (let position = 0; position < titles.length; position += 1) {
+		if (normalize(titles[position]) === key) {
+			existingIndex = position;
+			break;
+		}
+	}
 
-  if (existingIndex !== -1) {
-    if (existingIndex <= index) return;
-    titles.splice(existingIndex, 1);
-  }
+	if (existingIndex !== -1) {
+		if (existingIndex <= index) return;
+		titles.splice(existingIndex, 1);
+	}
 
-  titles.splice(Math.min(index, titles.length), 0, text);
+	titles.splice(Math.min(index, titles.length), 0, text);
 }
 
 /**
@@ -199,13 +215,14 @@ function prioritizeTitle(titles, index, value) {
  * @returns {string}
  */
 function findTranslation(block, locale) {
-  const translations = block && Array.isArray(block.translations) ? block.translations : [];
-  for (const entry of translations) {
-    if (entry && entry.iso_639_1 === locale && entry.data) {
-      return cleanText(entry.data.name || entry.data.title);
-    }
-  }
-  return '';
+	const translations =
+		block && Array.isArray(block.translations) ? block.translations : [];
+	for (const entry of translations) {
+		if (entry && entry.iso_639_1 === locale && entry.data) {
+			return cleanText(entry.data.name || entry.data.title);
+		}
+	}
+	return "";
 }
 
 /**
@@ -217,16 +234,16 @@ function findTranslation(block, locale) {
  * @param {number|null} season
  */
 function addSeasonVariants(titles, mediaType, season) {
-  if (mediaType === 'movie' || !season || season <= 1 || !titles.length) return;
+	if (mediaType === "movie" || !season || season <= 1 || !titles.length) return;
 
-  const base = titles[0];
-  const variants = [
-    `${base} Season ${season}`,
-    `${base} ${ordinal(season)} Season`,
-    `${base} S${season}`,
-  ];
+	const base = titles[0];
+	const variants = [
+		`${base} Season ${season}`,
+		`${base} ${ordinal(season)} Season`,
+		`${base} S${season}`,
+	];
 
-  for (let index = variants.length - 1; index >= 0; index -= 1) {
-    prioritizeTitle(titles, 1, variants[index]);
-  }
+	for (let index = variants.length - 1; index >= 0; index -= 1) {
+		prioritizeTitle(titles, 1, variants[index]);
+	}
 }

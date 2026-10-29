@@ -3,8 +3,8 @@
  * @returns {string}
  */
 export function originOf(url) {
-  const match = String(url || '').match(/^(https?:\/\/[^/]+)/i);
-  return match ? match[1] : '';
+	const match = String(url || "").match(/^(https?:\/\/[^/]+)/i);
+	return match ? match[1] : "";
 }
 
 /**
@@ -12,7 +12,7 @@ export function originOf(url) {
  * @returns {boolean}
  */
 export function isHttpUrl(url) {
-  return /^https?:\/\//i.test(String(url || ''));
+	return /^https?:\/\//i.test(String(url || ""));
 }
 
 /**
@@ -20,8 +20,8 @@ export function isHttpUrl(url) {
  * @returns {string}
  */
 export function ensureTrailingSlash(url) {
-  if (!url) return '';
-  return url.endsWith('/') ? url : `${url}/`;
+	if (!url) return "";
+	return url.endsWith("/") ? url : `${url}/`;
 }
 
 /**
@@ -30,12 +30,12 @@ export function ensureTrailingSlash(url) {
  * @returns {string}
  */
 export function absoluteUrl(url, baseUrl) {
-  const value = String(url || '').trim();
-  if (!value) return '';
-  if (/^https?:\/\//i.test(value)) return value;
-  if (value.indexOf('//') === 0) return `https:${value}`;
-  if (value.charAt(0) === '/') return `${originOf(baseUrl)}${value}`;
-  return `${ensureTrailingSlash(originOf(baseUrl) || baseUrl)}${value}`;
+	const value = String(url || "").trim();
+	if (!value) return "";
+	if (/^https?:\/\//i.test(value)) return value;
+	if (value.indexOf("//") === 0) return `https:${value}`;
+	if (value.charAt(0) === "/") return `${originOf(baseUrl)}${value}`;
+	return `${ensureTrailingSlash(originOf(baseUrl) || baseUrl)}${value}`;
 }
 
 /**
@@ -45,10 +45,10 @@ export function absoluteUrl(url, baseUrl) {
  * @returns {string}
  */
 export function streamTitle(value) {
-  return String(value === null || value === undefined ? '' : value)
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 120);
+	return String(value === null || value === undefined ? "" : value)
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 120);
 }
 
 /**
@@ -69,38 +69,38 @@ export function streamTitle(value) {
  * @returns {Record<string, any>}
  */
 export function buildStream({
-  name,
-  provider,
-  title,
-  url,
-  quality,
-  type,
-  language,
-  referer,
-  origin,
-  subtitles,
-  userAgent,
+	name,
+	provider,
+	title,
+	url,
+	quality,
+	type,
+	language,
+	referer,
+	origin,
+	subtitles,
+	userAgent,
 }) {
-  const headers = { 'User-Agent': userAgent };
-  if (referer) headers.Referer = ensureTrailingSlash(referer);
-  if (origin) headers.Origin = origin;
+	const headers = { "User-Agent": userAgent };
+	if (referer) headers.Referer = ensureTrailingSlash(referer);
+	if (origin) headers.Origin = origin;
 
-  const stream = {
-    name,
-    title: streamTitle(title),
-    url,
-    quality: quality || 'HD',
-    type,
-    language,
-    provider,
-    headers,
-  };
+	const stream = {
+		headers,
+		language,
+		name,
+		provider,
+		quality: quality || "HD",
+		title: streamTitle(title),
+		type,
+		url,
+	};
 
-  if (Array.isArray(subtitles) && subtitles.length) {
-    stream.subtitles = subtitles;
-  }
+	if (Array.isArray(subtitles) && subtitles.length) {
+		stream.subtitles = subtitles;
+	}
 
-  return stream;
+	return stream;
 }
 
 /**
@@ -113,23 +113,24 @@ export function buildStream({
  * @returns {Promise<string|null>}
  */
 export async function probeHlsQuality(http, streamUrl, referer) {
-  if (!streamUrl || streamUrl.indexOf('.m3u8') === -1) return null;
-  if (http.remaining() < 20000) return null;
+	if (!streamUrl || streamUrl.indexOf(".m3u8") === -1) return null;
+	if (http.remaining() < 20000) return null;
 
-  const headers = {};
-  if (referer) headers.Referer = ensureTrailingSlash(referer);
+	const headers = {};
+	if (referer) headers.Referer = ensureTrailingSlash(referer);
 
-  const playlist = await http.text(streamUrl, { headers });
-  if (!playlist) return null;
+	const playlist = await http.text(streamUrl, { headers });
+	if (!playlist) return null;
 
-  const pattern = /RESOLUTION=\d+x(\d+)/g;
-  let best = 0;
-  let match;
+	const pattern = /RESOLUTION=\d+x(\d+)/g;
+	let best = 0;
+	let match = pattern.exec(playlist);
 
-  while ((match = pattern.exec(playlist))) {
-    const height = Number.parseInt(match[1], 10);
-    if (height > best && height <= 4320) best = height;
-  }
+	while (match) {
+		const height = Number.parseInt(match[1], 10);
+		if (height > best && height <= 4320) best = height;
+		match = pattern.exec(playlist);
+	}
 
-  return best > 0 ? `${best}p` : null;
+	return best > 0 ? `${best}p` : null;
 }
