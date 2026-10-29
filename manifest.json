@@ -1,0 +1,101 @@
+{
+  "name": "Nuvio Anime Providers",
+  "version": "1.0.0",
+  "description": "Anime stream providers for Nuvio: HiAnime, OtakuDesu, Oploverz, Anoboy, Anichin, Gomunime and GogoAnimes.",
+  "author": "Kurumi",
+  "scrapers": [
+    {
+      "id": "hianime",
+      "name": "HiAnime",
+      "description": "Sub and dub anime streams from hianime.at (HLS).",
+      "version": "1.0.0",
+      "author": "Kurumi",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/hianime.js",
+      "enabled": true,
+      "logo": "https://hianime.at/theme/images/logo.png",
+      "contentLanguage": ["ja", "en"],
+      "formats": ["hls"],
+      "supportsExternalPlayer": false
+    },
+    {
+      "id": "otakudesu",
+      "name": "OtakuDesu",
+      "description": "Indonesian-subtitled anime streams from otakudesu.blog.",
+      "version": "1.0.0",
+      "author": "Kurumi",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/otakudesu.js",
+      "enabled": true,
+      "logo": "https://otakudesu.blog/wp-content/uploads/2017/07/Otaku-Desu-1-e1502267840475.jpg",
+      "contentLanguage": ["id"],
+      "formats": ["hls", "mp4"],
+      "supportsExternalPlayer": false
+    },
+    {
+      "id": "oploverz",
+      "name": "Oploverz",
+      "description": "Indonesian-subtitled anime streams from oploverz.ch.",
+      "version": "1.0.0",
+      "author": "Kurumi",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/oploverz.js",
+      "enabled": true,
+      "contentLanguage": ["id"],
+      "formats": ["mp4"],
+      "supportsExternalPlayer": false
+    },
+    {
+      "id": "anoboy",
+      "name": "Anoboy",
+      "description": "Indonesian-subtitled anime streams from anoboy.quest.",
+      "version": "1.0.0",
+      "author": "Kurumi",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/anoboy.js",
+      "enabled": true,
+      "contentLanguage": ["id"],
+      "formats": ["mp4"],
+      "supportsExternalPlayer": false
+    },
+    {
+      "id": "anichin",
+      "name": "Anichin",
+      "description": "Donghua with Indonesian subtitles from anichin.moe (HLS).",
+      "version": "1.0.0",
+      "author": "Kurumi",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/anichin.js",
+      "enabled": true,
+      "contentLanguage": ["id", "zh"],
+      "formats": ["hls", "mp4"],
+      "supportsExternalPlayer": false
+    },
+    {
+      "id": "gomunime",
+      "name": "Gomunime",
+      "description": "Indonesian-subtitled anime streams from gomunime.top.",
+      "version": "1.0.0",
+      "author": "Kurumi",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/gomunime.js",
+      "enabled": true,
+      "contentLanguage": ["id"],
+      "formats": ["mp4", "hls"],
+      "supportsExternalPlayer": false
+    },
+    {
+      "id": "gogoanimes",
+      "name": "GogoAnimes",
+      "description": "English-subtitled anime streams from gogoanimes.cv (HLS).",
+      "version": "1.0.0",
+      "author": "Kurumi",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/gogoanimes.js",
+      "enabled": true,
+      "contentLanguage": ["en"],
+      "formats": ["hls"],
+      "supportsExternalPlayer": false
+    }
+  ]
+}
